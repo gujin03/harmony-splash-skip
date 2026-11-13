@@ -1,5 +1,7 @@
 import router from '@ohos.router';
 import common from '@ohos.app.ability.common';
+import fs from '@ohos.file.fs';
+import picker from '@ohos.file.picker';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { Log } from '../common/Logger';
 import { RuleStore } from '../config/RuleStore';
@@ -33,6 +35,8 @@ struct Rules {
   @State testResult: string = '';
   @State ioText: string = '';
   @State ioMsg: string = '';
+  /** 系统保存窗口是异步的，期间禁用按钮防重复拉起 */
+  @State exporting: boolean = false;
 
   aboutToAppear(): void {
     this.load();
@@ -142,9 +146,69 @@ struct Rules {
     }
   }
 
-  private doExport(): void {
-    this.ioText = this.store().exportText();
-    this.ioMsg = `已生成导出文本（${this.ioText.length} 字符），含 checksum，可长按复制保存`;
+  /** 导出文件名里的时间戳，便于在文件管理器里区分多次导出 */
+  private stamp(): string {
+    const d = new Date();
+    const p = (n: number): string => n < 10 ? `0${n}` : `${n}`;
+    return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}`;
+  }
+
+  private shortUri(uri: string): string {
+    const i: number = uri.lastIndexOf('/');
+    return i >= 0 ? uri.substring(i + 1) : uri;
+  }
+
+  /**
+   * 调系统文件保存器（DocumentViewPicker.save）让用户指定目录并落盘。
+   *
+   * 导出内容与旧实现完全一致：RuleStore.exportText() 产出的 JSON 信封（含 schemaVersion + checksum）。
+   * 三种结果都要有反馈：成功显示文件名、取消明确提示、失败显示错误码。
+   */
+  private async doExport(): Promise<void> {
+    if (this.exporting) {
+      return;
+    }
+    const text: string = this.store().exportText();
+    if (text.length === 0) {
+      this.ioMsg = '导出失败：规则内容为空';
+      return;
+    }
+    this.exporting = true;
+    this.ioMsg = '正在等待系统保存窗口…';
+    try {
+      const ctx = getContext(this) as common.UIAbilityContext;
+      const docPicker = new picker.DocumentViewPicker(ctx);
+      const opt = new picker.DocumentSaveOptions();
+      opt.newFileNames = [`splashskip-rules-${this.stamp()}.json`];
+      opt.fileSuffixChoices = ['.json'];
+      opt.autoCreateEmptyFile = true;
+      const uris: Array<string> = await docPicker.save(opt);
+      // 用户取消：多数版本返回空数组；个别版本抛 13900042，见 catch
+      if (uris === undefined || uris.length === 0) {
+        this.ioMsg = '已取消导出（未生成文件）';
+        return;
+      }
+      const uri: string = uris[0];
+      const file: fs.File = fs.openSync(uri, fs.OpenMode.READ_WRITE | fs.OpenMode.TRUNC);
+      try {
+        fs.writeSync(file.fd, text);
+      } finally {
+        fs.closeSync(file);
+      }
+      this.ioText = text;   // 同时留在文本框便于核对内容
+      this.ioMsg = `已保存 ${text.length} 字符：${this.shortUri(uri)}`;
+      Log.info(`export saved: ${uri}`);
+    } catch (e) {
+      const err = e as BusinessError;
+      if (err.code === 13900042) {
+        this.ioMsg = '已取消导出（未生成文件）';
+      } else {
+        this.ioMsg = `导出失败：${err.code} ${err.message}`;
+      }
+      Log.error(`export failed: code=${err.code} msg=${err.message}`);
+    } finally {
+      this.exporting = false;
+    }
   }
 
   private doImport(): void {
@@ -327,13 +391,13 @@ struct Rules {
             .width('100%')
             .margin({ top: 4 })
 
-          Text('导入 / 导出（JSON，含 schemaVersion + checksum）')
+          Text('导出到文件 / 从文本导入（JSON，含 schemaVersion + checksum）')
             .fontSize(14)
             .fontWeight(FontWeight.Medium)
             .width('100%')
             .margin({ top: 16, bottom: 6 })
 
-          TextArea({ placeholder: '点「导出」生成文本；或粘贴规则 JSON 后点「导入」', text: this.ioText })
+          TextArea({ placeholder: '导出会调起系统保存窗口，可自选目录并生成 .json 文件；导入请粘贴规则 JSON 后点「导入」', text: this.ioText })
             .height(110)
             .fontSize(10)
             .width('100%')
@@ -342,11 +406,14 @@ struct Rules {
             })
 
           Row() {
-            Button('导出')
+            Button(this.exporting ? '等待保存…' : '导出到文件')
               .fontSize(12)
               .height(36)
               .layoutWeight(1)
-              .onClick(() => this.doExport())
+              .enabled(!this.exporting)
+              .onClick(() => {
+                this.doExport();
+              })
             Button('导入')
               .fontSize(12)
               .height(36)
