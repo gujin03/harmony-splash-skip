@@ -8,6 +8,7 @@
  *   2. recent 固定长度环形覆盖，避免内存无上限增长
  *   3. TopN 用 Map 计数 + 排序取前 N（规则量级小，不必上堆）
  *   4. snapshot() 产出可 JSON.stringify 的纯数据，供扩展进程写文件 / UI 读取
+ *   5. 2026-11-14 补 FR-5.3 的 reads/v4/v6 分项与 FR-8.1 的 dohLike 计数
  */
 
 export interface DiagRecord {
@@ -37,6 +38,14 @@ export interface DiagSnapshot {
   overload: number;
   written: number;
   writeErr: number;
+  /** 从 TUN 读到的包总数（含非 DNS） */
+  reads: number;
+  /** IPv4 包数 */
+  v4: number;
+  /** IPv6 包数 */
+  v6: number;
+  /** 疑似加密 DNS（DoT 853 / DoH over QUIC 443）包数，用于 FR-8.1 标注 */
+  dohLike: number;
   recent: DiagRecord[];
   topBlocked: DomainCount[];
   topForwarded: DomainCount[];
@@ -57,6 +66,10 @@ export class DiagStats {
   private overload: number = 0;
   private written: number = 0;
   private writeErr: number = 0;
+  private reads: number = 0;
+  private v4: number = 0;
+  private v6: number = 0;
+  private dohLike: number = 0;
 
   private recent: DiagRecord[] = [];
   private blockMap: Map<string, number> = new Map();
@@ -92,6 +105,25 @@ export class DiagStats {
 
   bumpOverload(): void {
     this.overload++;
+  }
+
+  /** FR-5.3：每读到一个 IP 包记一次，按版本分项 */
+  bumpRead(ver: number): void {
+    this.reads++;
+    if (ver === 6) {
+      this.v6++;
+    } else {
+      this.v4++;
+    }
+  }
+
+  /** FR-8.1：疑似 DoT(853) / DoH over QUIC(443) 的非 DNS 包 */
+  bumpDohLike(): void {
+    this.dohLike++;
+  }
+
+  getDohLike(): number {
+    return this.dohLike;
   }
 
   /** 记录一条查询结果；action 用 ACTION_* 常量 */
@@ -142,6 +174,10 @@ export class DiagStats {
       overload: this.overload,
       written: this.written,
       writeErr: this.writeErr,
+      reads: this.reads,
+      v4: this.v4,
+      v6: this.v6,
+      dohLike: this.dohLike,
       recent: this.recent.slice(0),
       topBlocked: this.topOf(this.blockMap),
       topForwarded: this.topOf(this.fwdMap)

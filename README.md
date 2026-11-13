@@ -9,6 +9,7 @@
 | 开发差距清单 | `docs/开发差距分析.md` |
 | 真机验证手册 | `docs/真机PoC验证手册.md` |
 | 图标设计与规范 | `design/icon/README.md` |
+| 版本变更 | `CHANGELOG.md` |
 
 > ⛔ 原「无障碍点击」路线已按 PRD **D9 整体移除**（代码已删，非停用）：`ohos.permission.ACCESSIBILITY_EXTENSION_ABILITY` 自 API 20 起为 `system_basic`，普通自签名应用申请即安装失败（`9568289`）。完整证据与仍有效的技术结论见 PRD 附录 F。
 
@@ -26,8 +27,9 @@
 | 「本次放行」误伤兜底 | ✅ 诊断页输入，`sessionAllow` 仅本次会话，停 VPN 即清空 |
 | AAAA `::` 应答 | ✅ qtype=28 不再错误地回 A 记录 |
 | 空闲降频 | ✅ 连续 EAGAIN 时 10 → 100ms 退避，有包立刻恢复 |
-| 单元测试 | ✅ **152 项全过**（`bash test/run.sh`） |
-| 多 App 覆盖率实测 | 🟡 车来了 B、平安好车主 E、中国联通 E；第三方 SDK 样本仍不足 3–5 款 |
+| 第二梯队 11 项 | ✅ 规则编辑 UI／TopN 一键加黑／效果分级面板／导入导出 checksum／异常通知／首次引导／VPN 冲突提示／DoH 标注／暂停 10 分钟／集成测试／CHANGELOG |
+| 单元测试 | ✅ **226 项全过**（6 个测试文件，`bash test/run.sh`） |
+| 多 App 覆盖率实测 | 🟡 车来了 B、平安好车主 E、中国联通 E；第三方 SDK 样本仍不足 3–5 款（分级面板已录入这三款，显示「样本不足 3 款暂不判定」） |
 
 ⚠️ **能力边界**（PRD R-12／R-13）：走系统 resolver 的解析与 HTTPDNS 可能不进 TUN；**一方自有广告**（素材与投放都在自有域，如平安好车主、中国联通）DNS 层无下手处，不计入 A+B 分母，不要硬拦业务主域。
 
@@ -68,22 +70,32 @@ Index「启动拦截」→ SkipVpnExtension.create(TUN)
 |---|---|---|---|
 | `rules.json` | 主进程（诊断页放行）／扩展（种子、清空） | 扩展（500ms 节流热重载） | 规则热更新、本次放行 |
 | `vpn_state.json` | 扩展 | 首页 | 真实运行状态、启动失败码 |
-| `diag.json` | 扩展（2 秒节流） | 诊断页 | 计数、TopN、最近 20 条 |
+| `diag.json` | 扩展（2 秒节流） | 诊断页 | 计数、TopN、最近 20 条、收包分项、DoH 计数 |
+| `grades.json` | 效果分级页 | 效果分级页 | A/B/C/D/E 人工分级与分层统计（R-11 折中） |
+| `pause.json` | 首页（暂停按钮） | 首页轮询 | 暂停截止时间，到点自动恢复 VPN |
+| `onboarded.json` | 首页引导弹层 | 首页 | 首次说明只显示一次 |
 
 ## 四、目录结构
 
 ```
 entry/src/main/ets/
 ├── entryability/EntryAbility.ets    应用入口；处理通知栏停止意图（onCreate / onNewWant 两条路径）
-├── pages/Index.ets                  主页：启停、通知权限、真实状态轮询
-├── pages/Diagnostics.ets            诊断页：统计 / TopN / 最近查询 / 本次放行输入
-├── vpnextension/SkipVpnExtension.ets  VPN 主链路、通知动作按钮、状态与快照落盘
+├── pages/Index.ets                  主页：启停、暂停、首次引导、三页入口、真实状态轮询
+├── pages/Diagnostics.ets            诊断页：统计 / TopN 加黑 / 最近查询 / 本次放行 / DoH 提示
+├── pages/Rules.ets                  规则管理：增删改、启停、域名测试、导入导出
+├── pages/Grades.ets                 效果分级：手动 App 标签、A/B/C/D/E 记录与分层统计
+├── vpnextension/SkipVpnExtension.ets  VPN 主链路、通知动作按钮、异常通知、状态与快照落盘
 ├── core/DnsCodec.ets                纯函数：DNS 解析与应答构造（含 AAAA）
 ├── core/DomainRules.ets             纯函数：规则匹配、白名单优先、会话放行判定
-├── core/DiagStats.ets               纯函数：计数、TopN、recent 环形缓冲
+├── core/DiagStats.ets               纯函数：计数、TopN、收包分项、DoH 计数
+├── core/RuleSchema.ets              纯函数：导入导出、FNV-1a32 checksum、字段校验
+├── core/GradeStats.ets              纯函数：分级聚合与 §10-1 分层口径
 ├── config/TargetApps.ets            编译期默认规则种子、上游与超时常量
-├── config/RuleStore.ets             规则文件化、热重载、本次放行
-├── common/VpnState.ets              跨进程状态读写
+├── config/RuleStore.ets             规则文件化、热重载、CRUD、本次放行
+├── config/GradeStore.ets            分级记录持久化
+├── common/VpnState.ets              跨进程 VPN 状态读写
+├── common/PauseState.ets            暂停截止时间读写
+├── common/OnboardState.ets          首次引导标记
 ├── common/Logger.ets                HiLog 封装
 └── net/UpstreamForwarder.ets        上游 UDP 转发、事务 ID 重映射、protect
 ```
@@ -99,4 +111,7 @@ entry/src/main/ets/
 
 ## 六、后续工作
 
-见 `docs/开发差距分析.md`：第二梯队为规则编辑 UI、TopN 一键加黑、效果分级面板、导入导出、异常通知、首次引导、多 App 覆盖率与 24h／功耗实测。
+功能开发已收口（第一、第二梯队全部完成，见 `docs/开发差距分析.md`）。**剩余均为验证类待办**：
+补 2–3 款第三方聚合 SDK App 把 A+B 分母做实；`0.0.0.0` vs NXDOMAIN 多次复验；
+连续 24 小时稳定性、待机 1 小时耗电 < 1%、误拦回归；R-12 的 `isInternal`／`trustedApplications` 覆盖率探索。
+另：异常通知与 VPN 冲突提示目前只有代码级 + 编译验证，尚未人工注入异常路径实测。

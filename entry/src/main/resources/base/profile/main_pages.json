@@ -1,6 +1,8 @@
 {
   "src": [
     "pages/Index",
-    "pages/Diagnostics"
+    "pages/Diagnostics",
+    "pages/Rules",
+    "pages/Grades"
   ]
 }

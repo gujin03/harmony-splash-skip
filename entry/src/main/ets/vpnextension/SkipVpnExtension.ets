@@ -51,6 +51,7 @@ const EAGAIN: number = 13900010;
 const MAX_WRITE_QUEUE: number = 256;
 const READ_BUF_SIZE: number = 4096;
 const NOTIFY_ID: number = 1001;
+const NOTIFY_ALERT_ID: number = 1002;    // FR-6.3 异常通知，与常驻通知分开
 const NOTIFY_UPDATE_EVERY: number = 5;   // 每 N 次拦截更新一次通知，避免刷太频
 const DIAG_WRITE_MS: number = 2000;      // 诊断快照最小写盘间隔
 const DIAG_FILE: string = '/diag.json';
@@ -91,6 +92,8 @@ export default class SkipVpnExtension extends VpnExtensionAbility {
   private notifyOk: boolean = false;
   private lastNotifiedAt: number = -1;
   private lastDiagAt: number = 0;
+  /** FR-6.3：同类异常每会话只提醒一次，避免通知刷屏 */
+  private alertFlags: Map<string, boolean> = new Map();
 
   onCreate(want: Want): void {
     Log.info('VPN onCreate');
@@ -142,6 +145,7 @@ export default class SkipVpnExtension extends VpnExtensionAbility {
       this.forwarder = ok ? fwd : null;
       if (!ok) {
         Log.error('forwarder start failed — 未命中查询将全部返回 SERVFAIL');
+        this.alertOnce('fwd-start', '上游转发不可用', '未命中域名将全部返回 SERVFAIL，请停止后重试');
       }
       Log.info(`mode=${RESPONSE_MODE} upstream=${UPSTREAM_DNS} protect=${fwd.isProtected()}`);
 
@@ -159,6 +163,8 @@ export default class SkipVpnExtension extends VpnExtensionAbility {
       writeVpnState(this.context.filesDir, {
         running: false, startedAt: 0, reason: 'create-failed', errCode: err.code
       });
+      this.alertOnce('create', '拦截启动失败',
+        `无法建立 VPN（错误码 ${err.code}）：系统同时只允许一个 VPN，请检查其它 VPN 应用后重试`);
     }
   }
 
@@ -178,6 +184,7 @@ export default class SkipVpnExtension extends VpnExtensionAbility {
         idleMs = IDLE_MIN_MS;   // 有包立刻恢复灵敏，不牺牲拦截时延
         this.reads++;
         const view = new Uint8Array(buf, 0, n);
+        this.stats.bumpRead((view[0] >> 4) & 0x0f);   // FR-5.3：收包数 v4/v6 分项
         const q = parseDnsQuery(view);
         if (q === null) {
           this.nonDns++;
@@ -199,6 +206,10 @@ export default class SkipVpnExtension extends VpnExtensionAbility {
             if (p === 17 && d === 53) {
               this.dnsLikeFail++;
               Log.error(`!! DNS-like parse FAIL v${iv} n=${n} (dnsLikeFail=${this.dnsLikeFail})`);
+            }
+            // FR-8.1：UDP 853（DoT）或 443（DoH over QUIC 常见）视为疑似加密 DNS
+            if (p === 17 && (d === 853 || d === 443)) {
+              this.stats.bumpDohLike();
             }
           }
           if (this.nonDns <= 24) {
@@ -289,6 +300,7 @@ export default class SkipVpnExtension extends VpnExtensionAbility {
       this.stats.bumpOverload();
       this.stats.record(now, q.qname, ACTION_FAIL, 'overload', q.ipVersion);
       Log.warn(`overload inflight=${this.inflight} qname=${q.qname} -> SERVFAIL`);
+      this.alertOnce('overload', '查询过载', '在途转发任务已达上限，部分查询返回 SERVFAIL');
       this.enqueueWrite(buildResponsePacket(raw, q, buildServFail(raw, q)));
       this.writeDiagThrottled();
       return;
@@ -296,6 +308,7 @@ export default class SkipVpnExtension extends VpnExtensionAbility {
     const fwd = this.forwarder;
     if (fwd === null || !fwd.isReady()) {
       this.stats.record(now, q.qname, ACTION_FAIL, 'no-forwarder', q.ipVersion);
+      this.alertOnce('no-fwd', '上游转发未就绪', '当前查询返回 SERVFAIL，建议停止后重新启动拦截');
       this.enqueueWrite(buildResponsePacket(raw, q, buildServFail(raw, q)));
       this.writeDiagThrottled();
       return;
@@ -309,6 +322,9 @@ export default class SkipVpnExtension extends VpnExtensionAbility {
         this.stats.record(Date.now(), q.qname, ACTION_FAIL, 'timeout', q.ipVersion);
         if (this.stats.getFwdFail() <= 10) {
           Log.warn(`FWD-FAIL ${q.qname} qt=${q.qtype} -> SERVFAIL`);
+        }
+        if (this.stats.getFwdFail() === 1) {
+          this.alertOnce('fwd-fail', '上游 DNS 解析超时', '已有域名解析失败；若网络异常请停止拦截后重试');
         }
         this.enqueueWrite(buildResponsePacket(raw, q, buildServFail(raw, q)));
         this.writeDiagThrottled();
@@ -422,6 +438,36 @@ export default class SkipVpnExtension extends VpnExtensionAbility {
     }
   }
 
+  /**
+   * FR-6.3 异常通知：与常驻状态通知分开（不同 id），同类异常每会话只发一次。
+   * ⚠️ 不 await：通知权限未开时 publish 会失败，但不能影响 DNS 主链路。
+   */
+  private alertOnce(keyName: string, title: string, text: string): void {
+    if (this.alertFlags.get(keyName) === true) {
+      return;
+    }
+    this.alertFlags.set(keyName, true);
+    try {
+      const request: notificationManager.NotificationRequest = {
+        id: NOTIFY_ALERT_ID,
+        content: {
+          notificationContentType: notificationManager.ContentType.NOTIFICATION_CONTENT_BASIC_TEXT,
+          normal: {
+            title: title,
+            text: text,
+            additionalText: '开屏广告拦截'
+          }
+        }
+      };
+      notificationManager.publish(request).catch((e: BusinessError) => {
+        Log.error(`publish alert failed: code=${e.code}`);
+      });
+    } catch (e) {
+      const err = e as BusinessError;
+      Log.error(`build alert failed: code=${err.code}`);
+    }
+  }
+
   private enqueueWrite(pkt: Uint8Array): void {
     if (this.writeQueue.length >= MAX_WRITE_QUEUE) {
       this.dropped++;
@@ -452,6 +498,7 @@ export default class SkipVpnExtension extends VpnExtensionAbility {
         const err = e as BusinessError;
         this.stats.bumpWriteErr();
         Log.error(`tun write failed: code=${err.code} msg=${err.message}`);
+        this.alertOnce('write', 'TUN 回写失败', '部分 DNS 应答未能写回，可尝试停止后重新启动拦截');
       }
     }
     this.writing = false;
@@ -478,6 +525,11 @@ export default class SkipVpnExtension extends VpnExtensionAbility {
       this.rules.clearSessionAllow();   // FR-8.3：临时放行只在本次会话有效
     }
     this.cancelNotification();
+    notificationManager.cancel(NOTIFY_ALERT_ID).catch((e: BusinessError) => {
+      if (e.code !== 1600007) {
+        Log.error(`cancel alert notify failed: code=${e.code}`);
+      }
+    });
     const snap = this.stats.snapshot(Date.now());
     Log.info(`STATS (${reason}) dns=${snap.dns} block=${snap.block} ` +
       `fwdOk=${snap.fwdOk} fwdFail=${snap.fwdFail} overload=${snap.overload} ` +

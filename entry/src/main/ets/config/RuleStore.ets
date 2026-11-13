@@ -21,6 +21,13 @@ import {
   MATCH_EXACT
 } from '../core/DomainRules';
 import type { DecisionResult } from '../core/DomainRules';
+import {
+  RulesBody,
+  buildExport,
+  parseImport,
+  RULE_SCHEMA_VERSION
+} from '../core/RuleSchema';
+import type { ImportResult } from '../core/RuleSchema';
 import { BLACKLIST, WHITELIST } from './TargetApps';
 import { Log } from '../common/Logger';
 
@@ -119,22 +126,24 @@ export class RuleStore {
     }
   }
 
-  /** 供后续「TopN 一键加黑」使用；精确匹配，默认启用 */
-  addBlacklistDomain(host: string, note: string): void {
+  /** FR-5.4「TopN 一键加黑」：精确匹配、默认启用；返回是否真的新增 */
+  addBlacklistDomain(host: string, note: string): boolean {
     const h: string = normalizeDomain(host);
     if (h.length === 0) {
-      return;
+      return false;
     }
     const data: RulesFile | null = this.current();
     if (data === null) {
-      return;
+      return false;
     }
-    if (findRule(h, data.blacklist) < 0) {
-      const r: DomainRule = { domain: h, matchType: MATCH_EXACT, enabled: true, note: note };
-      data.blacklist.push(r);
-      this.persist(data);
-      Log.info(`RuleStore blacklist + ${h}`);
+    if (findRule(h, data.blacklist) >= 0) {
+      return false;
     }
+    const r: DomainRule = { domain: h, matchType: MATCH_EXACT, enabled: true, note: note };
+    data.blacklist.push(r);
+    this.persist(data);
+    Log.info(`RuleStore blacklist + ${h}`);
+    return true;
   }
 
   /** VPN 停止时清空临时放行，避免下次启动带着旧放行项 */
@@ -146,6 +155,120 @@ export class RuleStore {
     data.sessionAllow = [];
     this.persist(data);
     Log.info('RuleStore session allow cleared');
+  }
+
+  // ------------------------------------------------ 规则编辑 UI（FR-4.3 / FR-3.4）
+
+  /** 编辑页读取完整规则体；每次操作都重新读文件，避免覆盖扩展刚写的变更 */
+  getSnapshot(): RulesFile | null {
+    return this.current();
+  }
+
+  /** 域名测试：返回当前规则下的判定结果 */
+  testDomain(host: string): Decision {
+    return this.decide(host);
+  }
+
+  private listOf(data: RulesFile, list: string): Array<DomainRule> {
+    return list === 'white' ? data.whitelist : data.blacklist;
+  }
+
+  addRule(list: string, r: DomainRule): boolean {
+    const data: RulesFile | null = this.current();
+    if (data === null) {
+      return false;
+    }
+    const arr: Array<DomainRule> = this.listOf(data, list);
+    if (findRule(normalizeDomain(r.domain), arr) >= 0) {
+      return false;   // 已存在同名规则，避免重复
+    }
+    arr.push(r);
+    this.persist(data);
+    Log.info(`RuleStore ${list} add ${r.domain}`);
+    return true;
+  }
+
+  updateRule(list: string, index: number, r: DomainRule): boolean {
+    const data: RulesFile | null = this.current();
+    if (data === null) {
+      return false;
+    }
+    const arr: Array<DomainRule> = this.listOf(data, list);
+    if (index < 0 || index >= arr.length) {
+      return false;
+    }
+    arr[index] = r;
+    this.persist(data);
+    Log.info(`RuleStore ${list} update #${index}`);
+    return true;
+  }
+
+  deleteRule(list: string, index: number): boolean {
+    const data: RulesFile | null = this.current();
+    if (data === null) {
+      return false;
+    }
+    const arr: Array<DomainRule> = this.listOf(data, list);
+    if (index < 0 || index >= arr.length) {
+      return false;
+    }
+    arr.splice(index, 1);
+    this.persist(data);
+    Log.info(`RuleStore ${list} delete #${index}`);
+    return true;
+  }
+
+  toggleRule(list: string, index: number): boolean {
+    const data: RulesFile | null = this.current();
+    if (data === null) {
+      return false;
+    }
+    const arr: Array<DomainRule> = this.listOf(data, list);
+    if (index < 0 || index >= arr.length) {
+      return false;
+    }
+    const old: DomainRule = arr[index];
+    arr[index] = {
+      domain: old.domain,
+      matchType: old.matchType,
+      enabled: !old.enabled,
+      note: old.note
+    };
+    this.persist(data);
+    Log.info(`RuleStore ${list} toggle #${index} → ${arr[index].enabled}`);
+    return true;
+  }
+
+  /** 导出为带 checksum 的信封文本（FR-3.4） */
+  exportText(): string {
+    const data: RulesFile | null = this.current();
+    if (data === null) {
+      return '';
+    }
+    const body: RulesBody = {
+      blacklist: data.blacklist,
+      whitelist: data.whitelist,
+      sessionAllow: data.sessionAllow
+    };
+    return buildExport(body, Date.now());
+  }
+
+  /** 导入并校验；返回空串表示成功，否则返回中文错误列表 */
+  importText(text: string): string {
+    const res: ImportResult = parseImport(text);
+    if (!res.ok || res.body === null) {
+      return res.errors.join('；');
+    }
+    const body: RulesBody = res.body;
+    this.persist({
+      schemaVersion: RULE_SCHEMA_VERSION,
+      updatedAt: 0,
+      blacklist: body.blacklist,
+      whitelist: body.whitelist,
+      sessionAllow: body.sessionAllow
+    });
+    Log.info('RuleStore import ok');
+    return '';
   }
 
   getCounts(): string {
