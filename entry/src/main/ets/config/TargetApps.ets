@@ -9,7 +9,8 @@ import { DomainRule, MATCH_SUFFIX, MATCH_EXACT } from '../core/DomainRules';
 
 /** 观测目标应用（仅用于统计与诊断展示，PRD D4） */
 export const TARGET_BUNDLES: Array<string> = [
-  'com.ygkj.chelaile.standard.har'   // 车来了：Mac 代理侧端到端已验证
+  'com.ygkj.chelaile.standard.har',  // 车来了：Mac 代理侧端到端已验证
+  'com.sinovatech.unicom.ha'         // 中国联通：2026-11-14 真机（自有广告子域）
 ];
 
 /**
@@ -32,6 +33,16 @@ export const BLACKLIST: Array<DomainRule> = [
   //    拦整个域会波及华为账号与云服务（PRD R-13 同类约束）。
   { domain: 'adx-drcn.op.dbankcloud.cn', matchType: MATCH_EXACT, enabled: true, note: '华为广告交易平台 ADX（实时竞价；诊断 topForwarded 2 次）' },
   { domain: 'sdkdserver-drcn.op.dbankcloud.cn', matchType: MATCH_EXACT, enabled: true, note: '华为广告 SDK 服务端（同 op 域，命名推断，实测观察中）' },
+  // ---------- 中国联通自有广告子域：实测无效，默认关闭（PRD R-13 补充）----------
+  // ⛔ 2026-11-14 真机结论：这三条精确主机名确实被拦（smartad 22 次 / m1.img 4 次），
+  //    但三次冷启动三套不同素材、开屏广告**照常完整播放**，与 VPN 关闭时的基线完全一致。
+  //    说明投放决策与素材不走这三个域，属一方广告体系（§3.4 E 级），DNS 层无下手处。
+  // ⛔ 保持 enabled=false：开启只会让 SDK 反复重试（22 次查询）、把诊断页命中率灌水，
+  //    却不会少一帧广告。留档是为了避免以后重复试错，请勿开启。
+  // ⛔ 绝不写 '10010.com' suffix：同域下有登录/业务网关/支付，拦整域会破坏登录与话费查询。
+  { domain: 'smartad.10010.com', matchType: MATCH_EXACT, enabled: false, note: '实测无效：拦 22 次仍出广告，勿开启' },
+  { domain: 'm1.ad.10010.com', matchType: MATCH_EXACT, enabled: false, note: '实测无效：广告服务子域，勿开启' },
+  { domain: 'm1.img.10010.com', matchType: MATCH_EXACT, enabled: false, note: '实测无效：拦 4 次仍出广告，勿开启' },
   // ---------- 聚合广告 ----------
   { domain: 'sogaha.cn', matchType: MATCH_SUFFIX, enabled: true, note: '聚合广告 SDK（实测 ctrace.15 次 / adx.7 次）' },
   // ---------- 待实测确认（默认关，避免误伤业务）----------
@@ -47,6 +58,12 @@ export const WHITELIST: Array<DomainRule> = [
   { domain: 'unionpay.com', matchType: MATCH_SUFFIX, enabled: true, note: '支付类，永久放行' },
   { domain: 'icbc.com.cn', matchType: MATCH_SUFFIX, enabled: true, note: '银行，永久放行' },
   { domain: 'cmbchina.com', matchType: MATCH_SUFFIX, enabled: true, note: '银行，永久放行' },
+  // 中国联通业务域（2026-11-14 真机实测）：⛔ 禁止把 10010.com 放宽为 suffix；
+  // 广告子域即使精确拦也被实测无效（见黑名单留档），业务域做负向断言防误伤
+  { domain: 'loginxx.10010.com', matchType: MATCH_EXACT, enabled: true, note: '联通登录，拦了直接登不进' },
+  { domain: 'm.client.10010.com', matchType: MATCH_EXACT, enabled: true, note: '联通主站 API' },
+  { domain: 'enrichgw.10010.com', matchType: MATCH_EXACT, enabled: true, note: '联通业务网关' },
+  { domain: 'mobile.unicompayment.com', matchType: MATCH_EXACT, enabled: true, note: '联通支付，永久放行' },
   // 观测到但判定不拦（诊断页 topForwarded）——留在这里防以后加宽泛后缀时误伤
   { domain: 'api.chelaile.net.cn', matchType: MATCH_EXACT, enabled: true, note: '车来了主 API' },
   { domain: 'atrace.chelaile.net.cn', matchType: MATCH_EXACT, enabled: true, note: '车来了埋点（拦了可能影响数据上报/功能）' },

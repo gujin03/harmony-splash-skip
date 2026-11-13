@@ -118,6 +118,41 @@ console.log('=== 9. 空规则域名的防护 ===');
   ok(!matchesRule('a.com', dot), '仅一个点的规则归一化后为空 → 不命中');
 }
 
+console.log('=== 10. 联通自有广告规则：默认关闭 + 绝不误伤业务域（PRD R-13）===');
+{
+  // 与 TargetApps.ets 真实配置一致：实测无效的广告子域保持 enabled=false
+  const off: DomainRule[] = [
+    rule('smartad.10010.com', MATCH_EXACT, false),
+    rule('m1.ad.10010.com', MATCH_EXACT, false),
+    rule('m1.img.10010.com', MATCH_EXACT, false)
+  ];
+  const white: DomainRule[] = [
+    rule('loginxx.10010.com', MATCH_EXACT, true),
+    rule('m.client.10010.com', MATCH_EXACT, true),
+    rule('enrichgw.10010.com', MATCH_EXACT, true),
+    rule('mobile.unicompayment.com', MATCH_EXACT, true)
+  ];
+  eq(decide('smartad.10010.com', white, off), ACTION_ALLOW, '实测无效 → 默认放行（不灌水命中率）');
+  eq(decide('m1.ad.10010.com', white, off), ACTION_ALLOW, '实测无效 → 默认放行');
+  eq(decide('m1.img.10010.com', white, off), ACTION_ALLOW, '实测无效 → 默认放行');
+
+  // 负向断言：即便以后有人临时开启，也只能命中最精确的主机名
+  const on: DomainRule[] = [
+    rule('smartad.10010.com', MATCH_EXACT, true),
+    rule('m1.ad.10010.com', MATCH_EXACT, true),
+    rule('m1.img.10010.com', MATCH_EXACT, true)
+  ];
+  eq(decide('smartad.10010.com', white, on), ACTION_BLOCK, '临时开启 → 只拦精确主机名');
+  const biz: string[] = [
+    'loginxx.10010.com', 'm.client.10010.com', 'img.client.10010.com',
+    'hlclient.10010.com', 'pushservice.10010.com', 'enrichgw.10010.com',
+    'mobile.unicompayment.com', '10010.com', 'm1.ad.10010.com.evil.net'
+  ];
+  for (const h of biz) {
+    eq(decide(h, white, on), ACTION_ALLOW, `业务域/非广告域放行：${h}`);
+  }
+}
+
 console.log(`\n${'='.repeat(50)}`);
 console.log(`通过 ${pass} 项，失败 ${fail} 项`);
 if (fail > 0) {

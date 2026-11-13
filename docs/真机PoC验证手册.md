@@ -175,6 +175,57 @@ HDC=/Applications/DevEco-Studio.app/Contents/sdk/default/openharmony/toolchains/
 
 ---
 
+## 七之二、多 App 分层覆盖率实测（2026-11-13 / 11-14）
+
+| App | 包名 | 分级 | 关键数据 | 结论 |
+|---|---|---|---|---|
+| 车来了 | `com.ygkj.chelaile.standard.har` | **B** | 拦截命中聚合 SDK 域名，无广告进主界面（约 4 秒） | 计入 A+B 分母 |
+| 平安好车主 | `com.pingan.oharm.carowner` | **E** | DNS 44／拦截 0／9 个域名属 `pingan.com.cn` | 一方广告，不计入分母 |
+| 中国联通 | `com.sinovatech.unicom.ha` | **E** | 见下方 A/B/C 三轮对照 | 一方广告，精确子域拦截无效，不计入分母 |
+
+**中国联通三轮对照**（每次均 `force-stop` 后冷启动，截屏连拍）：
+
+| 轮次 | 配置 | DNS 判定 | 开屏画面 |
+|---|---|---|---|
+| A | 原规则库，VPN 开 | `dns=42 block=0 fwdOk=42`，转发全为 `10010.com` 业务域 | 广告完整播放（招联 eSIM） |
+| B | 精确拦 `smartad`／`m1.ad`／`m1.img` 三条，VPN 开 | `BLOCK 26`（smartad 22／m1.img 4）、`FWD 20` | 广告完整播放（港澳国际流量包） |
+| C | VPN 关（基线） | 不接管 | 广告完整播放（流量越用越便宜） |
+
+⚠️ 三套不同素材说明是服务端轮换投放、不是缓存；拦掉广告子域后画面毫无变化，判定 **E 级**。三条规则因此留档为 `enabled: false`——开着只会让 SDK 重试并虚高命中率。详见 `ADR-001` 的 AD-7、PRD R-13。
+
+## 七之三、自动化验证配方（不依赖人工点屏）
+
+本轮中国联通验证全程由 hdc 完成，无需人工操作手机：
+
+```bash
+HDC=$HOME/Library/OpenHarmony/Sdk/23/toolchains/hdc; T=<device-id>
+
+# 1. 工具 App 拉前台 → 自动点「启动拦截」（1100×2380 屏，按钮中心 550,1074）
+"$HDC" -t $T shell aa start -a EntryAbility -b com.liuqi.splashskip
+"$HDC" -t $T shell uitest uiInput click 550 1074
+
+# 2. 冷启动目标 App（⛔ 必须 force-stop，划掉进程会因 DNS 缓存造成假阴性）
+"$HDC" -t $T shell aa force-stop <bundle>
+"$HDC" -t $T shell aa start -a EntryAbility -b <bundle>
+
+# 3. 每 2 秒连拍 4–5 张（⛔ snapshot_display 只接受 .jpeg 后缀，传 .png 直接报错）
+"$HDC" -t $T shell snapshot_display -f /data/local/tmp/s1.jpeg
+"$HDC" -t $T file recv /data/local/tmp/s1.jpeg /tmp/s1.jpeg
+
+# 4. 按 VPN 扩展进程 pid 过滤日志，避免混入上一轮会话
+"$HDC" -t $T shell hilog -T SplashSkip -x > /tmp/hilog.txt
+
+# 5. 停止：诊断页「返回」(140,240) → 主界面「停止拦截」(550,1218)
+"$HDC" -t $T shell uitest uiInput click 140 240
+"$HDC" -t $T shell uitest uiInput click 550 1218
+```
+
+⚠️ 坐标只在 1100×2380 的当前布局下实测有效，界面改动后需重新截屏定位。
+⚠️ VPN 首次连接的系统授权框：本机此前已授权，本轮未复现；换设备仍需人工确认一次。
+⚠️ `hilog -x` 会清空缓冲区，取数时一次抓全并按 pid 分离；诊断页是**会话累计**，换 App 前必须停止再启动以归零（R-11）。
+
+---
+
 ## 八、常见错误码
 
 | 码 / 现象 | 含义 | 处理 |
