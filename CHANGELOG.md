@@ -2,6 +2,21 @@
 
 本人自用的 HarmonyOS 开屏广告拦截工具。版本号与 `2026-11-10-鸿蒙开屏跳过工具需求文档.md`（PRD）修订号对齐；只记用户可感知的变化与关键工程事实，过程留痕见 `docs/开发差距分析.md` 与工作日志。
 
+## v0.1.0（开源首发）· 2026-11-14 · 开源发布到 GitHub
+
+首个公开版本，对应内部研发版本 **v0.3.0-10**（版本号与 PRD 对齐，对外从 v0.1.0 重新起算）。仓库：<https://github.com/gujin03/harmony-splash-skip>
+
+**本次发布准备动作**
+- `README.md` 重写为开源风格中文文档（简介／价值／用户／架构／功能／使用指南），去除全部本地路径与用户名。
+- 新增 `LICENSE`（MIT），版权人 `gujin03`。
+- 起草 `docs/隐私政策.md`（本地优先、零上传、权限最小化），README 已链接。
+- 用 `git filter-repo` 清零 git 历史中的本地路径／用户名（`/Users/liuqi`、vendor、占位邮箱）；本地笔记另存为 `README.local.md`（gitignore，不入库）。
+- `test/run.sh` 的 `NODE` 改为读 `$NODE_HOME` 或 `PATH` 回退，消除 macOS 硬编码路径。
+- 新增 `docs/发布清单.md`（含 AppGallery 数据安全表单模板）。
+
+**功能概述（详见 README 与各 `v0.3.0-x` 条目）**
+本地 VPN + DNS 拦截开屏广告；规则热重载、黑白名单、诊断分级、原生导入导出、异常通知、首次引导、暂停 10 分钟。仅对第三方 SDK 开屏广告有效，一方自有广告无解；需设备开启开发者模式并授权 VPN 权限。
+
 ## v0.3.0-10 · 2026-11-14 · 导入也改走系统文件选择器
 
 - 规则页「从文件导入」调用 `DocumentViewPicker.select`：`.json` 后缀过滤，只列规则文件；选中后 `open → stat → read → UTF-8 解码` 读取（超过 2MB 直接拒绝），再走原有四关校验（format／schemaVersion／字段／checksum）。
