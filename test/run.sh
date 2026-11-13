@@ -17,7 +17,7 @@ fi
 mkdir -p "$BUILD"
 
 # .ets → .ts（只复制纯函数模块，适配层不参与测试）
-MODULES=("DnsCodec" "DomainRules")
+MODULES=("DnsCodec" "DomainRules" "DiagStats")
 for m in "${MODULES[@]}"; do
   if [ ! -f "$CORE/$m.ets" ]; then
     echo "缺少核心模块：$CORE/$m.ets"

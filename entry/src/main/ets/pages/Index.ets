@@ -2,6 +2,7 @@ import vpnExtension from '@ohos.net.vpnExtension';
 import notificationManager from '@ohos.notificationManager';
 import common from '@ohos.app.ability.common';
 import { Want } from '@kit.AbilityKit';
+import router from '@ohos.router';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { Log } from '../common/Logger';
 
@@ -107,6 +108,16 @@ struct Index {
         .margin({ bottom: 20 })
 
       Divider().margin({ bottom: 16 })
+
+      Button('查看诊断')
+        .width('70%')
+        .backgroundColor('#4A6FA5')
+        .onClick(() => {
+          router.pushUrl({ url: 'pages/Diagnostics' }).catch((err: BusinessError) => {
+            Log.error(`push Diagnostics failed: ${err.code}`);
+          });
+        })
+        .margin({ bottom: 18 })
 
       Row() {
         Text(`通知权限：${this.notifyState}`)

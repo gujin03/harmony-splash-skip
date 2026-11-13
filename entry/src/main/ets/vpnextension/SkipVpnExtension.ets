@@ -13,7 +13,8 @@ import {
   buildResponsePacket
 } from '../core/DnsCodec';
 import type { DnsQuery } from '../core/DnsCodec';
-import { decide, ACTION_BLOCK } from '../core/DomainRules';
+import { decide, findRule, ACTION_BLOCK } from '../core/DomainRules';
+import { DiagStats, ACTION_BLOCK as DIAG_BLOCK, ACTION_FWD, ACTION_FAIL } from '../core/DiagStats';
 import { UpstreamForwarder } from '../net/UpstreamForwarder';
 import {
   BLACKLIST,
@@ -48,6 +49,8 @@ const MAX_WRITE_QUEUE: number = 256;
 const READ_BUF_SIZE: number = 4096;
 const NOTIFY_ID: number = 1001;
 const NOTIFY_UPDATE_EVERY: number = 5;   // 每 N 次拦截更新一次通知，避免刷太频
+const DIAG_WRITE_MS: number = 2000;      // 诊断快照最小写盘间隔
+const DIAG_FILE: string = '/diag.json';
 
 function sleep(ms: number): Promise<void> {
   return new Promise<void>((resolve: () => void) => {
@@ -71,18 +74,14 @@ export default class SkipVpnExtension extends VpnExtensionAbility {
   // 统计
   private reads: number = 0;
   private nonDns: number = 0;
-  private dnsHits: number = 0;
-  private blocked: number = 0;
-  private fwdOk: number = 0;
-  private fwdFail: number = 0;
-  private overload: number = 0;
+  private stats: DiagStats = new DiagStats();
   private inflight: number = 0;
-  private written: number = 0;
-  private writeErr: number = 0;
   private dropped: number = 0;
   private dnsLikeFail: number = 0;
+  private blockLogged: number = 0;
   private notifyOk: boolean = false;
   private lastNotifiedAt: number = -1;
+  private lastDiagAt: number = 0;
 
   onCreate(want: Want): void {
     Log.info('VPN onCreate');
@@ -206,7 +205,7 @@ export default class SkipVpnExtension extends VpnExtensionAbility {
           continue;
         }
 
-        this.dnsHits++;
+        this.stats.bumpDns();
         // ⚠️ buf 会被下一次 read 覆盖，必须先拷贝再交给异步处理
         const raw = new Uint8Array(n);
         raw.set(view);
@@ -221,39 +220,49 @@ export default class SkipVpnExtension extends VpnExtensionAbility {
         break;
       }
     }
-    Log.info(`VPN readLoop exit (reads=${this.reads}, nonDns=${this.nonDns}, dns=${this.dnsHits})`);
+    Log.info(`VPN readLoop exit (reads=${this.reads}, nonDns=${this.nonDns}, dns=${this.stats.getDns()})`);
   }
 
   /** 派发：同步返回、内部异步，不阻塞读循环（AD-1） */
   private dispatch(q: DnsQuery, raw: Uint8Array): void {
-    const action: string = decide(q.qname, WHITELIST, BLACKLIST);
+    const wHit: number = findRule(q.qname, WHITELIST);
+    const action: string = wHit >= 0 ? 'allow' : decide(q.qname, WHITELIST, BLACKLIST);
+    const now: number = Date.now();
 
     if (action === ACTION_BLOCK) {
-      this.blocked++;
-      if (this.blocked <= 30) {
-        Log.info(`BLOCK ${q.qname} qt=${q.qtype} mode=${RESPONSE_MODE}`);
+      const bHit: number = findRule(q.qname, BLACKLIST);
+      const reason: string = bHit >= 0 ? BLACKLIST[bHit].domain : 'blacklist';
+      this.stats.record(now, q.qname, DIAG_BLOCK, reason, q.ipVersion);
+      this.blockLogged++;
+      if (this.blockLogged <= 30) {
+        Log.info(`BLOCK ${q.qname} qt=${q.qtype} rule=${reason} mode=${RESPONSE_MODE}`);
       }
       const dns = RESPONSE_MODE === RESPONSE_MODE_ZERO
         ? buildAddressResponse(raw, q, [0, 0, 0, 0])
         : buildNxDomain(raw, q);
       this.enqueueWrite(buildResponsePacket(raw, q, dns));
-      if (this.blocked - this.lastNotifiedAt >= NOTIFY_UPDATE_EVERY) {
-        this.lastNotifiedAt = this.blocked;
+      if (this.stats.getBlock() - this.lastNotifiedAt >= NOTIFY_UPDATE_EVERY) {
+        this.lastNotifiedAt = this.stats.getBlock();
         this.publishNotification();
       }
+      this.writeDiagThrottled();
       return;
     }
 
     // 未命中：转发上游
     if (this.inflight >= MAX_INFLIGHT) {
-      this.overload++;
+      this.stats.bumpOverload();
+      this.stats.record(now, q.qname, ACTION_FAIL, 'overload', q.ipVersion);
       Log.warn(`overload inflight=${this.inflight} qname=${q.qname} -> SERVFAIL`);
       this.enqueueWrite(buildResponsePacket(raw, q, buildServFail(raw, q)));
+      this.writeDiagThrottled();
       return;
     }
     const fwd = this.forwarder;
     if (fwd === null || !fwd.isReady()) {
+      this.stats.record(now, q.qname, ACTION_FAIL, 'no-forwarder', q.ipVersion);
       this.enqueueWrite(buildResponsePacket(raw, q, buildServFail(raw, q)));
+      this.writeDiagThrottled();
       return;
     }
 
@@ -262,24 +271,59 @@ export default class SkipVpnExtension extends VpnExtensionAbility {
     fwd.forward(payload, UPSTREAM_TIMEOUT_MS).then((resp: Uint8Array | null) => {
       this.inflight--;
       if (resp === null) {
-        this.fwdFail++;
-        if (this.fwdFail <= 10) {
+        this.stats.record(Date.now(), q.qname, ACTION_FAIL, 'timeout', q.ipVersion);
+        if (this.stats.getFwdFail() <= 10) {
           Log.warn(`FWD-FAIL ${q.qname} qt=${q.qtype} -> SERVFAIL`);
         }
         this.enqueueWrite(buildResponsePacket(raw, q, buildServFail(raw, q)));
+        this.writeDiagThrottled();
         return;
       }
-      this.fwdOk++;
-      if (this.fwdOk <= 20) {
+      this.stats.record(Date.now(), q.qname, ACTION_FWD, 'upstream', q.ipVersion);
+      if (this.stats.getFwdOk() <= 20) {
         Log.info(`FWD ${q.qname} qt=${q.qtype} len=${resp.length}`);
       }
       this.enqueueWrite(buildResponsePacket(raw, q, resp));
+      this.writeDiagThrottled();
     }).catch((e: BusinessError) => {
       this.inflight--;
-      this.fwdFail++;
+      this.stats.record(Date.now(), q.qname, ACTION_FAIL, 'cb-error', q.ipVersion);
       Log.error(`forward callback error: code=${e.code} msg=${e.message}`);
       this.enqueueWrite(buildResponsePacket(raw, q, buildServFail(raw, q)));
+      this.writeDiagThrottled();
     });
+  }
+
+  /**
+   * 节流写诊断快照到应用沙箱，供 UI 跨进程读取（FR-5）。
+   * 扩展进程与 UI 进程内存不共享，只能用文件传递；2 秒节流避免频繁写盘。
+   */
+  private writeDiagThrottled(): void {
+    const now: number = Date.now();
+    if (now - this.lastDiagAt < DIAG_WRITE_MS) {
+      return;
+    }
+    this.lastDiagAt = now;
+    const path: string = this.context.filesDir + DIAG_FILE;
+    const snap: string = JSON.stringify(this.stats.snapshot(now));
+    // 无 fs.writeFile，用 open/write/close；文件仅约 2KB 且 2 秒节流，同步写代价可忽略
+    let file: fs.File | null = null;
+    try {
+      const mode: number = fs.OpenMode.READ_WRITE | fs.OpenMode.CREATE | fs.OpenMode.TRUNC;
+      file = fs.openSync(path, mode);
+      fs.writeSync(file.fd, snap);
+    } catch (e) {
+      const err = e as BusinessError;
+      Log.error(`write diag failed: code=${err.code} msg=${err.message}`);
+    } finally {
+      if (file !== null) {
+        try {
+          fs.closeSync(file);
+        } catch (e) {
+          // 关闭失败无需处理
+        }
+      }
+    }
   }
 
   /** 常驻通知：显示运行状态与统计（FR-6.1 / FR-6.2） */
@@ -291,7 +335,7 @@ export default class SkipVpnExtension extends VpnExtensionAbility {
           notificationContentType: notificationManager.ContentType.NOTIFICATION_CONTENT_BASIC_TEXT,
           normal: {
             title: '开屏广告拦截 · 运行中',
-            text: `已拦截 ${this.blocked} · 转发 ${this.fwdOk} · 失败 ${this.fwdFail}`,
+            text: `已拦截 ${this.stats.getBlock()} · 转发 ${this.stats.getFwdOk()} · 失败 ${this.stats.getFwdFail()}`,
             additionalText: '打开应用可停止拦截'
           }
         },
@@ -304,7 +348,7 @@ export default class SkipVpnExtension extends VpnExtensionAbility {
       }
     } catch (e) {
       const err = e as BusinessError;
-      if (this.notifyOk || this.blocked === 0) {
+      if (this.notifyOk || this.stats.getBlock() === 0) {
         Log.error(`publish notification failed: code=${err.code} msg=${err.message}`);
       }
       this.notifyOk = false;
@@ -348,13 +392,11 @@ export default class SkipVpnExtension extends VpnExtensionAbility {
       try {
         const ab: ArrayBuffer = pkt.buffer.slice(pkt.byteOffset, pkt.byteOffset + pkt.byteLength);
         await fs.write(this.tunFd, ab);
-        this.written++;
+        this.stats.bumpWritten();
       } catch (e) {
         const err = e as BusinessError;
-        this.writeErr++;
-        if (this.writeErr <= 3) {
-          Log.error(`tun write failed: code=${err.code} msg=${err.message}`);
-        }
+        this.stats.bumpWriteErr();
+        Log.error(`tun write failed: code=${err.code} msg=${err.message}`);
       }
     }
     this.writing = false;
@@ -386,10 +428,14 @@ export default class SkipVpnExtension extends VpnExtensionAbility {
       }
     }
     await this.cancelNotification();
-    Log.info(`STATS (${reason}) dns=${this.dnsHits} block=${this.blocked} ` +
-      `fwdOk=${this.fwdOk} fwdFail=${this.fwdFail} overload=${this.overload} ` +
-      `written=${this.written} writeErr=${this.writeErr} dropped=${this.dropped} dnsLikeFail=${this.dnsLikeFail} ` +
+    const snap = this.stats.snapshot(Date.now());
+    Log.info(`STATS (${reason}) dns=${snap.dns} block=${snap.block} ` +
+      `fwdOk=${snap.fwdOk} fwdFail=${snap.fwdFail} overload=${snap.overload} ` +
+      `written=${snap.written} writeErr=${snap.writeErr} dropped=${this.dropped} dnsLikeFail=${this.dnsLikeFail} ` +
       `inflight=${this.inflight} queue=${this.writeQueue.length}`);
+    // 强制落一次最终快照，供诊断页查看停止前状态
+    this.lastDiagAt = 0;
+    this.writeDiagThrottled();
   }
 
   onDestroy(): void {
