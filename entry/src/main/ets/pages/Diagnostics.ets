@@ -23,6 +23,8 @@ struct Diagnostics {
   @State topForwarded: string[] = [];
   @State recent: string[] = [];
   @State msg: string = '';
+  /** 场景提示（PRD R-13）：拦截 0 次时提示可能为自有广告，避免误判工具失效 */
+  @State hintText: string = '';
 
   aboutToAppear(): void {
     this.load();
@@ -46,6 +48,7 @@ struct Diagnostics {
       this.rateText = `拦截占比 ${rate}%（共 ${total} 条已判定）`;
       this.msg = `快照时间：${this.fmtTime(snap.updatedAt)}`;
 
+      this.hintText = this.buildHint(snap);
       this.topBlocked = this.fmtTop(snap.topBlocked);
       this.topForwarded = this.fmtTop(snap.topForwarded);
       this.recent = this.fmtRecent(snap.recent);
@@ -54,6 +57,30 @@ struct Diagnostics {
       this.msg = `读取失败：${err.code} ${err.message}`;
       Log.error(`read diag failed: ${err.code} ${err.message}`);
     }
+  }
+
+  /**
+   * 场景提示（PRD R-13 / §3.4 E 级）。
+   *
+   * ⚠️ 快照是**会话累计**，不是按 App 分开——R-11 已确认 DNS 层拿不到请求方包名。
+   * 所以这里只能说「本次会话」，不能说「该应用」。换 App 测试前应先停止再启动拦截以重置统计。
+   */
+  private buildHint(snap: DiagSnapshot): string {
+    if (snap.dns === 0) {
+      return '';
+    }
+    const judged: number = snap.block + snap.fwdOk + snap.fwdFail;
+    if (judged === 0) {
+      return '';
+    }
+    if (snap.block === 0) {
+      return '本次会话未拦截到任何广告域名。三种可能：① 该应用用自有广告投放（素材和接口都在自有域，如平安好车主），DNS 方案覆盖不到（R-13）；② 广告素材已缓存；③ 规则没覆盖——先看下面「转发 Top10」有没有明显是广告的域名。\n换 App 测试请先停止拦截再启动，统计才会归零。';
+    }
+    const rate: number = Math.round(snap.block * 100 / judged);
+    if (rate < 10) {
+      return `拦截占比只有 ${rate}%，大部分查询是正常业务或被白名单放行。若该应用确有开屏广告，检查「转发 Top10」里是否有漏拦的广告域名。`;
+    }
+    return '';
   }
 
   private fmtTime(t: number): string {
@@ -142,6 +169,22 @@ struct Diagnostics {
             .fontColor('#2E6BE6')
             .width('100%')
             .margin({ top: 4 })
+
+          if (this.hintText.length > 0) {
+            Row() {
+              Text(this.hintText)
+                .fontSize(12)
+                .fontColor('#8A5A00')
+                .lineHeight(18)
+                .width('100%')
+            }
+            .width('100%')
+            .padding(10)
+            .backgroundColor('#FFF7E6')
+            .border({ width: 1, color: '#FFD591' })
+            .borderRadius(6)
+            .margin({ top: 10 })
+          }
 
           this.sectionTitle('拦截 Top10（命中规则）')
           this.lineList(this.topBlocked, '#B03030')
