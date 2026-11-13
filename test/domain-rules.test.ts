@@ -8,6 +8,7 @@ import {
   matchesRule,
   findRule,
   decide,
+  decideWithSessionAllow,
   ACTION_ALLOW,
   ACTION_BLOCK,
   MATCH_SUFFIX,
@@ -151,6 +152,20 @@ console.log('=== 10. 联通自有广告规则：默认关闭 + 绝不误伤业�
   for (const h of biz) {
     eq(decide(h, white, on), ACTION_ALLOW, `业务域/非广告域放行：${h}`);
   }
+}
+
+console.log('=== 11. 本次会话放行优先于黑名单（FR-8.3 / §10-5）===');
+{
+  const white: DomainRule[] = [rule('pay.example.com', MATCH_EXACT, true)];
+  const black: DomainRule[] = [rule('ads.example.com', MATCH_SUFFIX, true)];
+  const allow: string[] = ['ads.example.com'];
+  eq(decideWithSessionAllow('ads.example.com', white, black, allow).action, ACTION_ALLOW, '放行项命中 → 放行');
+  eq(decideWithSessionAllow('ads.example.com', white, black, allow).reason, 'session-allow', 'reason 标明来源');
+  eq(decideWithSessionAllow('x.ads.example.com', white, black, []).action, ACTION_BLOCK, '无放行项 → 黑名单仍拦');
+  eq(decideWithSessionAllow('pay.example.com', white, black, allow).action, ACTION_ALLOW, '白名单仍能放行');
+  eq(decideWithSessionAllow('other.com', white, black, allow).action, ACTION_ALLOW, '无关域名默认放行');
+  eq(decideWithSessionAllow(' ADS.EXAMPLE.COM. ', white, black, allow).action, ACTION_ALLOW, '归一化后仍命中放行');
+  eq(decideWithSessionAllow('ads.example.com.attacker.net', white, black, allow).action, ACTION_ALLOW, '放行项不误命中拼接域');
 }
 
 console.log(`\n${'='.repeat(50)}`);

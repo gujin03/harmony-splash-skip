@@ -80,3 +80,33 @@ export function decide(host: string, whitelist: DomainRule[], blacklist: DomainR
   }
   return ACTION_ALLOW;
 }
+
+export interface DecisionResult {
+  action: string;
+  reason: string;
+}
+
+/**
+ * 含「本次会话放行」的综合判定（FR-8.3 / §10-5）。
+ * 优先级：sessionAllow > 白名单 > 黑名单 > 放行。
+ * ⛔ 纯函数：RuleStore 与 node 单元测试共用，禁止 import 任何 `@ohos.*`。
+ */
+export function decideWithSessionAllow(
+  host: string,
+  whitelist: DomainRule[],
+  blacklist: DomainRule[],
+  sessionAllow: string[]
+): DecisionResult {
+  const h: string = normalizeDomain(host);
+  if (sessionAllow.indexOf(h) >= 0) {
+    return { action: ACTION_ALLOW, reason: 'session-allow' };
+  }
+  if (findRule(h, whitelist) >= 0) {
+    return { action: ACTION_ALLOW, reason: 'whitelist' };
+  }
+  const hit: number = findRule(h, blacklist);
+  if (hit >= 0) {
+    return { action: ACTION_BLOCK, reason: blacklist[hit].domain };
+  }
+  return { action: ACTION_ALLOW, reason: '' };
+}

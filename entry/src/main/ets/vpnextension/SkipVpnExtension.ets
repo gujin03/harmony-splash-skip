@@ -2,6 +2,7 @@ import VpnExtensionAbility from '@ohos.app.ability.VpnExtensionAbility';
 import vpnExtension from '@ohos.net.vpnExtension';
 import fs from '@ohos.file.fs';
 import notificationManager from '@ohos.notificationManager';
+import wantAgent from '@ohos.app.ability.wantAgent';
 import { Want } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { Log } from '../common/Logger';
@@ -9,23 +10,25 @@ import {
   parseDnsQuery,
   buildNxDomain,
   buildAddressResponse,
+  buildAaaaResponse,
   buildServFail,
-  buildResponsePacket
+  buildResponsePacket,
+  QTYPE_AAAA
 } from '../core/DnsCodec';
 import type { DnsQuery } from '../core/DnsCodec';
-import { decide, findRule, ACTION_BLOCK } from '../core/DomainRules';
+import { ACTION_ALLOW, ACTION_BLOCK } from '../core/DomainRules';
 import { DiagStats, ACTION_BLOCK as DIAG_BLOCK, ACTION_FWD, ACTION_FAIL } from '../core/DiagStats';
 import { UpstreamForwarder } from '../net/UpstreamForwarder';
 import {
-  BLACKLIST,
-  WHITELIST,
   RESPONSE_MODE,
   RESPONSE_MODE_ZERO,
   UPSTREAM_DNS,
   UPSTREAM_TIMEOUT_MS,
-  MAX_INFLIGHT,
-  AUTO_STOP_MS
+  MAX_INFLIGHT
 } from '../config/TargetApps';
+import { RuleStore } from '../config/RuleStore';
+import type { Decision } from '../config/RuleStore';
+import { writeVpnState } from '../common/VpnState';
 
 /**
  * DNS 拦截主链路（PRD v0.3.0 §4.3 四级闭环 / ADR-001）
@@ -51,6 +54,12 @@ const NOTIFY_ID: number = 1001;
 const NOTIFY_UPDATE_EVERY: number = 5;   // 每 N 次拦截更新一次通知，避免刷太频
 const DIAG_WRITE_MS: number = 2000;      // 诊断快照最小写盘间隔
 const DIAG_FILE: string = '/diag.json';
+const BUNDLE_NAME: string = 'com.liuqi.splashskip';
+const ENTRY_ABILITY: string = 'EntryAbility';
+// 空闲降频（NFR CPU/功耗）：连续 EAGAIN 时 10 → 100ms 退避，读到包立即回到 10ms
+const IDLE_MIN_MS: number = 10;
+const IDLE_STEP_MS: number = 10;
+const IDLE_MAX_MS: number = 100;
 
 function sleep(ms: number): Promise<void> {
   return new Promise<void>((resolve: () => void) => {
@@ -65,7 +74,7 @@ export default class SkipVpnExtension extends VpnExtensionAbility {
   private forwarder: UpstreamForwarder | null = null;
   private tunFd: number = -1;
   private running: boolean = false;
-  private stopTimer: number = -1;
+  private rules: RuleStore | null = null;
 
   // 写回队列（AD-1：串行写回）
   private writeQueue: Array<Uint8Array> = [];
@@ -85,6 +94,9 @@ export default class SkipVpnExtension extends VpnExtensionAbility {
 
   onCreate(want: Want): void {
     Log.info('VPN onCreate');
+    // 规则以沙箱文件为准：装完机后改 rules.json 即可热更新，不必重新编译
+    this.rules = new RuleStore(this.context.filesDir);
+    this.rules.init();
     this.startVpn();
   }
 
@@ -135,12 +147,18 @@ export default class SkipVpnExtension extends VpnExtensionAbility {
 
       this.publishNotification();
       this.readLoop();
-      this.stopTimer = setTimeout(() => {
-        this.stopVpn('auto-timeout');
-      }, AUTO_STOP_MS);
+      writeVpnState(this.context.filesDir, {
+        running: true, startedAt: Date.now(), reason: 'running', errCode: 0
+      });
+      // ⛔ 不再设 2 分钟 AUTO_STOP：§10-3 要求连续 24h 不自动断开，
+      //    且扩展进程的 setTimeout 实测根本不触发（旧注释见 Index.ets）。
+      //    停止只走「应用内按钮」或「通知栏停止按钮」两条明确入口。
     } catch (e) {
       const err = e as BusinessError;
       Log.error(`VPN create failed: code=${err.code} msg=${err.message}`);
+      writeVpnState(this.context.filesDir, {
+        running: false, startedAt: 0, reason: 'create-failed', errCode: err.code
+      });
     }
   }
 
@@ -148,13 +166,16 @@ export default class SkipVpnExtension extends VpnExtensionAbility {
   private async readLoop(): Promise<void> {
     this.running = true;
     const buf = new ArrayBuffer(READ_BUF_SIZE);
+    let idleMs: number = IDLE_MIN_MS;
     while (this.running && this.tunFd >= 0) {
       try {
         const n = await fs.read(this.tunFd, buf);
         if (n <= 0) {
-          await sleep(10);
+          await sleep(idleMs);
+          idleMs = Math.min(idleMs + IDLE_STEP_MS, IDLE_MAX_MS);
           continue;
         }
+        idleMs = IDLE_MIN_MS;   // 有包立刻恢复灵敏，不牺牲拦截时延
         this.reads++;
         const view = new Uint8Array(buf, 0, n);
         const q = parseDnsQuery(view);
@@ -213,7 +234,8 @@ export default class SkipVpnExtension extends VpnExtensionAbility {
       } catch (e) {
         const err = e as BusinessError;
         if (err.code === EAGAIN) {
-          await sleep(10);
+          await sleep(idleMs);
+          idleMs = Math.min(idleMs + IDLE_STEP_MS, IDLE_MAX_MS);
           continue;
         }
         Log.error(`VPN read failed: code=${err.code} msg=${err.message}`);
@@ -225,21 +247,34 @@ export default class SkipVpnExtension extends VpnExtensionAbility {
 
   /** 派发：同步返回、内部异步，不阻塞读循环（AD-1） */
   private dispatch(q: DnsQuery, raw: Uint8Array): void {
-    const wHit: number = findRule(q.qname, WHITELIST);
-    const action: string = wHit >= 0 ? 'allow' : decide(q.qname, WHITELIST, BLACKLIST);
+    let action: string = ACTION_ALLOW;
+    let reason: string = 'no-rule-store';
+    if (this.rules !== null) {
+      this.rules.refreshIfChanged();   // FR-3.5：改 rules.json 后下一次查询即生效
+      const d: Decision = this.rules.decide(q.qname);
+      action = d.action;
+      reason = d.reason;
+    }
     const now: number = Date.now();
+    if (reason === 'session-allow') {
+      Log.info(`SESSION-ALLOW ${q.qname}（FR-8.3 本次会话放行）`);
+    }
 
     if (action === ACTION_BLOCK) {
-      const bHit: number = findRule(q.qname, BLACKLIST);
-      const reason: string = bHit >= 0 ? BLACKLIST[bHit].domain : 'blacklist';
       this.stats.record(now, q.qname, DIAG_BLOCK, reason, q.ipVersion);
       this.blockLogged++;
+      const ansTag: string = q.qtype === QTYPE_AAAA ? 'AAAA(::)' : 'A(0.0.0.0)';
       if (this.blockLogged <= 30) {
-        Log.info(`BLOCK ${q.qname} qt=${q.qtype} rule=${reason} mode=${RESPONSE_MODE}`);
+        Log.info(`BLOCK ${q.qname} qt=${q.qtype} ans=${ansTag} rule=${reason} mode=${RESPONSE_MODE}`);
       }
-      const dns = RESPONSE_MODE === RESPONSE_MODE_ZERO
-        ? buildAddressResponse(raw, q, [0, 0, 0, 0])
-        : buildNxDomain(raw, q);
+      let dns: Uint8Array;
+      if (RESPONSE_MODE !== RESPONSE_MODE_ZERO) {
+        dns = buildNxDomain(raw, q);
+      } else if (q.qtype === QTYPE_AAAA) {
+        dns = buildAaaaResponse(raw, q);   // FR-2.4：IPv6 查询回 :: ，不回 A 记录
+      } else {
+        dns = buildAddressResponse(raw, q, [0, 0, 0, 0]);
+      }
       this.enqueueWrite(buildResponsePacket(raw, q, dns));
       if (this.stats.getBlock() - this.lastNotifiedAt >= NOTIFY_UPDATE_EVERY) {
         this.lastNotifiedAt = this.stats.getBlock();
@@ -329,6 +364,25 @@ export default class SkipVpnExtension extends VpnExtensionAbility {
   /** 常驻通知：显示运行状态与统计（FR-6.1 / FR-6.2） */
   private async publishNotification(): Promise<void> {
     try {
+      // FR-6.1：通知栏「停止拦截」按钮。WantAgent 指向 EntryAbility 并带 stop_vpn 参数，
+      // 由 EntryAbility.onCreate / onNewWant 直接调 stopVpnExtensionAbility，无需用户再点一次。
+      let buttons: Array<notificationManager.NotificationActionButton> = [];
+      try {
+        const agent = await wantAgent.getWantAgent({
+          wants: [{
+            bundleName: BUNDLE_NAME,
+            abilityName: ENTRY_ABILITY,
+            parameters: { action: 'stop_vpn' }
+          }],
+          actionType: wantAgent.OperationType.START_ABILITY,
+          requestCode: 0,
+          actionFlags: [wantAgent.WantAgentFlags.UPDATE_PRESENT_FLAG]
+        });
+        buttons = [{ title: '停止拦截', wantAgent: agent }];
+      } catch (e) {
+        const ae = e as BusinessError;
+        Log.error(`build stop WantAgent failed: code=${ae.code}`);
+      }
       const request: notificationManager.NotificationRequest = {
         id: NOTIFY_ID,
         content: {
@@ -336,10 +390,11 @@ export default class SkipVpnExtension extends VpnExtensionAbility {
           normal: {
             title: '开屏广告拦截 · 运行中',
             text: `已拦截 ${this.stats.getBlock()} · 转发 ${this.stats.getFwdOk()} · 失败 ${this.stats.getFwdFail()}`,
-            additionalText: '打开应用可停止拦截'
+            additionalText: '点「停止拦截」立即关闭'
           }
         },
-        isOngoing: true
+        isOngoing: true,
+        actionButtons: buttons
       };
       await notificationManager.publish(request);
       if (!this.notifyOk) {
@@ -402,40 +457,52 @@ export default class SkipVpnExtension extends VpnExtensionAbility {
     this.writing = false;
   }
 
-  private async stopVpn(reason: string): Promise<void> {
-    // ⚠️ 不再因 conn 为 null 提前返回：扩展被系统 stop 时 conn 可能已释放，
-    //    但通知与统计必须照样收尾，否则会留下「运行中」的僵尸通知。
+  /**
+   * ⛔ 必须保持同步（无 await）：onDestroy 返回后进程随时被系统回收。
+   *
+   * 真机 2026-11-14 01:06 实测：旧实现在 `await fwd.stop()`（内部 await udp.close()）挂住，
+   * 点通知栏「停止拦截」后只看到 onDestroy 与 readLoop exit，之后的
+   * vpn_state.json 仍写 running=true、通知残留、conn.destroy 没执行 —— 首页显示假的「运行中」。
+   * 现在把「状态／通知／统计」全部同步做完，网络资源改为 fire-and-forget。
+   */
+  private stopVpn(reason: string): void {
     this.running = false;
-    if (this.stopTimer >= 0) {
-      clearTimeout(this.stopTimer);
-      this.stopTimer = -1;
-    }
-    const fwd = this.forwarder;
-    if (fwd !== null) {
-      await fwd.stop();
-      this.forwarder = null;
-    }
-    const conn = this.conn;
-    this.conn = null;
+    this.writeQueue = [];
     this.tunFd = -1;
-    if (conn !== null) {
-      try {
-        await conn.destroy();
-        Log.info('VPN destroyed');
-      } catch (e) {
-        const err = e as BusinessError;
-        Log.error(`VPN destroy failed: code=${err.code}`);
-      }
+
+    // ① 同步收尾：跨进程状态、临时放行、通知、最终统计
+    writeVpnState(this.context.filesDir, {
+      running: false, startedAt: 0, reason: reason, errCode: 0
+    });
+    if (this.rules !== null) {
+      this.rules.clearSessionAllow();   // FR-8.3：临时放行只在本次会话有效
     }
-    await this.cancelNotification();
+    this.cancelNotification();
     const snap = this.stats.snapshot(Date.now());
     Log.info(`STATS (${reason}) dns=${snap.dns} block=${snap.block} ` +
       `fwdOk=${snap.fwdOk} fwdFail=${snap.fwdFail} overload=${snap.overload} ` +
       `written=${snap.written} writeErr=${snap.writeErr} dropped=${this.dropped} dnsLikeFail=${this.dnsLikeFail} ` +
       `inflight=${this.inflight} queue=${this.writeQueue.length}`);
-    // 强制落一次最终快照，供诊断页查看停止前状态
     this.lastDiagAt = 0;
     this.writeDiagThrottled();
+
+    // ② 网络资源清理：互不阻塞，失败只记日志
+    const fwd = this.forwarder;
+    this.forwarder = null;
+    if (fwd !== null) {
+      fwd.stop().catch((e: BusinessError) => {
+        Log.error(`forwarder stop failed: code=${e.code}`);
+      });
+    }
+    const conn = this.conn;
+    this.conn = null;
+    if (conn !== null) {
+      conn.destroy().then(() => {
+        Log.info('VPN destroyed');
+      }).catch((e: BusinessError) => {
+        Log.error(`VPN destroy failed: code=${e.code}`);
+      });
+    }
   }
 
   onDestroy(): void {

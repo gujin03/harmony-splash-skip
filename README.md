@@ -1,127 +1,102 @@
-# 开屏广告拦截工具 · 真机 PoC 工程
+# 开屏广告拦截 · HarmonyOS 真机工程
 
-对应需求文档：`~/WorkBuddy/常用空间/2026-11-10-鸿蒙开屏跳过工具需求文档.md`（**PRD v0.3.0**）**§9.1 极简验证版**。
+**本机自用**（个人侧载，不上架）。方案：**本地 VPN + DNS 拦截**——让开屏广告的资源请求失败，从而让 App 提前进入主界面；不识别按钮、不注入点击。
 
-**方案：本地 VPN + DNS 拦截**——不识别按钮、不注入点击，而是让开屏广告的资源请求失败，从而让 App 提前进入主界面。
-
-> ⚠️ 原「无障碍点击」路线已按 PRD **D9 整体移除**（代码已删，非停用）。原因：`ohos.permission.ACCESSIBILITY_EXTENSION_ABILITY` 自 **API 20** 起为 `system_basic`，普通自签名应用申请即安装失败（`code:9568289`），且设置内不存在第三方服务入口。完整证据与仍有效的技术结论见 PRD **附录 F**。
-
----
-
-## 一、当前进度
-
-| 验证项 | 结论 |
+| 文档 | 位置 |
 |---|---|
-| **V1** 建立 TUN 并取得 fd | ✅ `VPN created fd=32` |
-| **V2** 从 TUN 读到原始 IP 包 | ✅ IPv4 40 B、IPv6 76–116 B |
-| **V3** 解析出 DNS 查询域名 | ✅ `qname=weather-drcn.music.dbankcloud.cn n=78`，v4/v6 双通 |
-| **V4** 命中黑名单返回 NXDOMAIN，App 是否降级 | ⏳ 待实现（P0 门槛） |
-| **V5** 未命中转发上游并回写，App 功能正常 | ⏳ 待实现（P0 门槛） |
-| **V6** `protect(socket)` 是否可用、能否防回环 | ⏳ 待实现（P0 门槛） |
+| 需求文档 | `~/WorkBuddy/常用空间/2026-11-10-鸿蒙开屏跳过工具需求文档.md`（PRD v0.3.0-7） |
+| 架构决策 | `docs/ADR-001-DNS拦截架构决策.md` |
+| 开发差距清单 | `docs/开发差距分析.md` |
+| 真机验证手册 | `docs/真机PoC验证手册.md` |
+| 图标设计与规范 | `design/icon/README.md` |
 
-**端到端效果已先行验证**（Mac 代理侧，不改 App）：阻断穿山甲域名后，车来了直接进主界面、没有广告，只多等约 4 秒——对应 PRD §3.4 的 **B 级（超时后进入）**。那 4 秒是聚合 SDK 逐个等超时的总耗时（`All ad groups exhausted`、`costTime=4001`）。
+> ⛔ 原「无障碍点击」路线已按 PRD **D9 整体移除**（代码已删，非停用）：`ohos.permission.ACCESSIBILITY_EXTENSION_ABILITY` 自 API 20 起为 `system_basic`，普通自签名应用申请即安装失败（`9568289`）。完整证据与仍有效的技术结论见 PRD 附录 F。
 
 ---
 
-## 二、本机环境（2026-11-13 实测）
+## 一、当前状态（2026-11-14）
 
-| 项 | 实测结果 |
+| 项 | 状态 |
 |---|---|
-| DevEco Studio | ✅ **26.0.1**（DS-261.23567.138.36.2601290），`/Applications/DevEco-Studio.app` |
-| SDK | ✅ 包内 API **26**（26.0.1.120 Beta1） |
-| node / ohpm / hvigor | ✅ 包内 `tools/node` v24.14.1、`tools/ohpm` 26.0.1.220、`tools/hvigor` 6.26.20 |
-| `hdc` | ✅ `sdk/default/openharmony/toolchains/hdc` |
-| 真机 | ✅ KEE-AL00 / OpenHarmony 7.0.0.111 / **API 26**，USB 已连 |
+| V1–V6 真机验证 | ✅ 全过：建 TUN、v4/v6 解析、命中拦截、上游转发、`protect()` 防回环 |
+| 分层桌面图标 | ✅ 华为 UX 2.1.4.3.1（前景／背景各 1024，方案 A「盾内快进」） |
+| 通知栏「停止拦截」 | ✅ `WantAgent` → `EntryAbility` → `stopVpnExtensionAbility` |
+| 首页真实 VPN 状态 | ✅ 跨进程共享 `vpn_state.json` ＋ 3 秒轮询，启动失败显示错误码 |
+| 规则文件化与热更新 | ✅ `filesDir/rules.json`，改完下一次查询即生效，**不需重编译／装机／重启 VPN** |
+| 「本次放行」误伤兜底 | ✅ 诊断页输入，`sessionAllow` 仅本次会话，停 VPN 即清空 |
+| AAAA `::` 应答 | ✅ qtype=28 不再错误地回 A 记录 |
+| 空闲降频 | ✅ 连续 EAGAIN 时 10 → 100ms 退避，有包立刻恢复 |
+| 单元测试 | ✅ **152 项全过**（`bash test/run.sh`） |
+| 多 App 覆盖率实测 | 🟡 车来了 B、平安好车主 E、中国联通 E；第三方 SDK 样本仍不足 3–5 款 |
 
-> `hvigorw`、`ohpm` **都不在 `PATH`**，必须用绝对路径（见下）。
-
----
-
-## 三、目录结构
-
-```
-harmony-splash-skip/
-├── AppScope/                              # 应用级配置（bundleName com.liuqi.splashskip）
-├── build-profile.json5 / hvigorfile.ts / oh-package.json5
-├── hvigor/hvigor-config.json5             # modelVersion 5.0.0
-├── docs/
-│   └── 真机PoC验证手册.md                  # ⭐ 先读这个
-└── entry/src/main/
-    ├── module.json5                       # 声明 vpn ExtensionAbility + INTERNET 权限
-    ├── resources/base/profile/
-    │   └── main_pages.json
-    └── ets/
-        ├── entryability/EntryAbility.ets
-        ├── pages/Index.ets                # PoC 状态页 + 启动按钮
-        ├── common/Logger.ets              # HiLog tag = SplashSkip
-        ├── config/TargetApps.ets          # 观测目标包名（仅统计用）+ PoC 开关
-        └── vpnextension/
-            └── SkipVpnExtension.ets       # 收包主循环：TUN → IP/UDP/DNS → 抓到即销毁
-```
-
-> ⛔ **不要把 `*.bak` 放进 `resources/`**：资源打包器会把它当资源扫描，报
-> `Resource 'module_desc' conflict`（`Error Code: 11211117`）。备份一律放工程外。
+⚠️ **能力边界**（PRD R-12／R-13）：走系统 resolver 的解析与 HTTPDNS 可能不进 TUN；**一方自有广告**（素材与投放都在自有域，如平安好车主、中国联通）DNS 层无下手处，不计入 A+B 分母，不要硬拦业务主域。
 
 ---
 
-## 四、编译与安装（命令行，已验证可用）
+## 二、编译与安装（命令行，真机已验证）
 
 ```bash
 cd ~/WorkBuddy/harmony-splash-skip
-
 export DEVECO_SDK_HOME=/Applications/DevEco-Studio.app/Contents/sdk
 export DEVECO_JAVA_HOME=/Applications/DevEco-Studio.app/Contents/jbr
 export NODE_HOME=/Applications/DevEco-Studio.app/Contents/tools/node
 
 /Applications/DevEco-Studio.app/Contents/tools/hvigor/bin/hvigorw \
   assembleHap --mode module -p product=default -p buildMode=debug --no-daemon
-```
 
-产物：`entry/build/default/outputs/default/entry-default-signed.hap`（约 78 K）
-
-```bash
-HDC=/Applications/DevEco-Studio.app/Contents/sdk/default/openharmony/toolchains/hdc
+HDC=$HOME/Library/OpenHarmony/Sdk/23/toolchains/hdc
 "$HDC" install -r entry/build/default/outputs/default/entry-default-signed.hap
 "$HDC" shell aa start -a EntryAbility -b com.liuqi.splashskip
-"$HDC" shell hilog -T SplashSkip -x          # 抓日志
 ```
 
-> ⚠️ `hilog -x` 与 `-z` 不能同时用（会报 `CODE: -31`）。
+> `hvigorw` / `ohpm` 不在 `PATH`，必须用绝对路径。签名配置在 `.sign/sign-config.json5`（优先级高于 `build-profile.json5`，⛔ 不入库）。
+> 抓日志：`hdc shell hilog -T SplashSkip -x`；⚠️ `node --test` 传目录会静默跑 0 例，本机单测一律 `bash test/run.sh`。
 
----
-
-## 五、签名配置（重要）
-
-DevEco 26 把签名材料放在 **`.sign/sign-config.json5`**，构建时**优先级高于** `build-profile.json5` 里的 `signingConfigs`：
+## 三、运行机制（一句话链路）
 
 ```
-A configuration with the same name 'default' exists in sign-config.json5.
-The configuration in sign-config.json5 takes precedence.
+Index「启动拦截」→ SkipVpnExtension.create(TUN)
+  → readLoop 只读/解码/派发（非阻塞，写回串行队列）
+  → RuleStore.decide(qname)：sessionAllow > 白名单 > 黑名单
+      ├─ 命中：A=0.0.0.0 / AAAA=::（或 NXDOMAIN）写回 TUN
+      └─ 未命中：UpstreamForwarder 转发 223.5.5.5（protect 防回环），超时 SERVFAIL
 ```
 
-因此本仓库的 `build-profile.json5` **不含 `signingConfigs`**（已剥离），只保留 product 里的 `"signingConfig": "default"` 引用——这样仓库里不出现证书路径与密码密文，而本机构建仍能签出签名包（实测 `SignHap` 执行、`hap-sign-tool verify-app success`）。
+跨进程只有应用沙箱文件是共同真相源：
 
-`.sign/` 与 `*.p12 / *.cer / *.p7b / *.csr` 已在 `.gitignore` 中排除。
-
-> ⚠️ `targetSdkVersion` 不要写成 `"23"`：格式要求 `"5.0.0(23)"`，否则报 `00306042`。IDE 有时会写入空字符串，直接删掉该字段最稳。
-
----
-
-## 六、已踩的四个坑
-
-| # | 现象 | 原因 | 修法 |
+| 文件 | 写方 | 读方 | 用途 |
 |---|---|---|---|
-| 1 | 第二次 `fs.read` 报 `13900010` | TUN 非阻塞（EAGAIN），首版当致命错误 `break` 了 | 当「暂时没数据」重试，用 `reads/v4/v6/dns` 计数区分「真无流量」与「解析失败」 |
-| 2 | 只配 IPv4 DNS `10.0.0.1` 抓不到任何查询 | 手机 Wi-Fi 有 IPv6，系统优先用 IPv6 DNS，查询根本不进 TUN | 同时下发 `fd00::2/64` + `fd00::1`，并置 `isIPv6Accepted: true` |
-| 3 | IPv6 包解析不到 UDP | `nextHeader=0` 是 **Hop-by-Hop 扩展头**，UDP 在扩展头之后 | 链式解析 0/43/60/44 直到协议号 17，设最大跳数上限 |
-| 4 | 资源打包报 `module_desc conflict` | `string.json.before-d9.bak` 放在 `resources/` 下被当资源扫描 | 备份移出工程；`.gitignore` 已排除 `*.bak` |
+| `rules.json` | 主进程（诊断页放行）／扩展（种子、清空） | 扩展（500ms 节流热重载） | 规则热更新、本次放行 |
+| `vpn_state.json` | 扩展 | 首页 | 真实运行状态、启动失败码 |
+| `diag.json` | 扩展（2 秒节流） | 诊断页 | 计数、TopN、最近 20 条 |
 
----
+## 四、目录结构
 
-## 七、下一步
+```
+entry/src/main/ets/
+├── entryability/EntryAbility.ets    应用入口；处理通知栏停止意图（onCreate / onNewWant 两条路径）
+├── pages/Index.ets                  主页：启停、通知权限、真实状态轮询
+├── pages/Diagnostics.ets            诊断页：统计 / TopN / 最近查询 / 本次放行输入
+├── vpnextension/SkipVpnExtension.ets  VPN 主链路、通知动作按钮、状态与快照落盘
+├── core/DnsCodec.ets                纯函数：DNS 解析与应答构造（含 AAAA）
+├── core/DomainRules.ets             纯函数：规则匹配、白名单优先、会话放行判定
+├── core/DiagStats.ets               纯函数：计数、TopN、recent 环形缓冲
+├── config/TargetApps.ets            编译期默认规则种子、上游与超时常量
+├── config/RuleStore.ets             规则文件化、热重载、本次放行
+├── common/VpnState.ets              跨进程状态读写
+├── common/Logger.ets                HiLog 封装
+└── net/UpstreamForwarder.ets        上游 UDP 转发、事务 ID 重映射、protect
+```
 
-1. 读 `docs/真机PoC验证手册.md`，按 V4 → V5 → V6 顺序推进（三项都是 P0 门槛）；
-2. V4 先比对两种应答：**NXDOMAIN** vs **A 记录 `0.0.0.0`**，看哪种让广告 SDK 更快放弃；
-3. V5 必须实现上游转发，否则「只拦广告、不拦其它」不成立，方案不可用；
-4. 三项全过后进入 PRD §9.2 MVP（黑名单 + 白名单 + 通知栏 + 诊断页）；
-5. 结果回填 PRD 附录 C 与 §9.1。
+## 五、必须遵守的约束
+
+- ⛔ **不要把 `*.bak` 放进 `resources/`**：资源打包器会当资源扫描，报 `module_desc conflict`（`11211117`）；备份放工程外，`.gitignore` 已排除。
+- ⛔ **不要再接 2 分钟 `AUTO_STOP`**：与 PRD §10-3「连续 24 小时不自动断开」冲突，且扩展进程的 `setTimeout` 实测不触发。停止只走应用内按钮／通知栏按钮。
+- ⛔ **`stopVpn()` 必须保持同步**：`onDestroy` 返回后进程随时被回收，任何 `await` 之后的收尾都可能不执行（曾导致状态文件写不成、首页显示假的「运行中」）。
+- ⛔ **规则别改回编译期常量**：`TargetApps.ets` 只作首次种子；运行期以 `rules.json` 为准。
+- ⛔ **别拦 `pingan.com.cn`／`10010.com` 这类业务主域**：一方广告拦不住，硬拦会破坏登录与话费查询（R-13）。
+- ⚠️ `foreground/background` 各 1024×1024、背景不透明、不自带圆角；AppScope 与 entry 同名资源会编译覆盖，故 AppScope 一律加 `app_` 前缀。
+
+## 六、后续工作
+
+见 `docs/开发差距分析.md`：第二梯队为规则编辑 UI、TopN 一键加黑、效果分级面板、导入导出、异常通知、首次引导、多 App 覆盖率与 24h／功耗实测。

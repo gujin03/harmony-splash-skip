@@ -3,6 +3,7 @@ import router from '@ohos.router';
 import common from '@ohos.app.ability.common';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { Log } from '../common/Logger';
+import { RuleStore } from '../config/RuleStore';
 import type { DiagSnapshot, DiagRecord, DomainCount } from '../core/DiagStats';
 
 /**
@@ -25,9 +26,37 @@ struct Diagnostics {
   @State msg: string = '';
   /** 场景提示（PRD R-13）：拦截 0 次时提示可能为自有广告，避免误判工具失效 */
   @State hintText: string = '';
+  /** FR-8.3：本次放行域名输入与回显 */
+  @State allowInput: string = '';
+  @State allowMsg: string = '';
 
   aboutToAppear(): void {
     this.load();
+  }
+
+  /**
+   * FR-8.3 / §10-5：误伤兜底。
+   * 写进 rules.json 的 sessionAllow，扩展下一次查询即生效（RuleStore 热重载），
+   * 不需重启 VPN、不需重新编译装机；停 VPN 时由扩展清空。
+   */
+  private addAllow(): void {
+    const host: string = this.allowInput.trim();
+    if (host.length === 0) {
+      this.allowMsg = '请先输入域名';
+      return;
+    }
+    try {
+      const ctx = getContext(this) as common.UIAbilityContext;
+      const store = new RuleStore(ctx.filesDir);
+      store.init();
+      store.addSessionAllow(host);
+      this.allowMsg = `已放行 ${host}（仅本次会话，停 VPN 后清除）`;
+      this.allowInput = '';
+    } catch (e) {
+      const err = e as BusinessError;
+      this.allowMsg = `放行失败：${err.code}`;
+      Log.error(`addSessionAllow failed: ${err.code}`);
+    }
   }
 
   private load(): void {
@@ -169,6 +198,31 @@ struct Diagnostics {
             .fontColor('#2E6BE6')
             .width('100%')
             .margin({ top: 4 })
+
+          Row() {
+            TextInput({ placeholder: '误拦域名，本次放行' })
+              .layoutWeight(1)
+              .height(38)
+              .fontSize(12)
+              .onChange((v: string) => {
+                this.allowInput = v;
+              })
+            Button('放行')
+              .fontSize(12)
+              .height(38)
+              .margin({ left: 8 })
+              .onClick(() => this.addAllow())
+          }
+          .width('100%')
+          .margin({ top: 12 })
+
+          if (this.allowMsg.length > 0) {
+            Text(this.allowMsg)
+              .fontSize(11)
+              .fontColor('#2E6BE6')
+              .width('100%')
+              .margin({ top: 4 })
+          }
 
           if (this.hintText.length > 0) {
             Row() {

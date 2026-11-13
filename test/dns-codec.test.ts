@@ -12,6 +12,7 @@ import {
   parseDnsQuery,
   buildNxDomain,
   buildAddressResponse,
+  buildAaaaResponse,
   buildServFail,
   buildResponsePacket,
   RCODE_NOERROR,
@@ -386,6 +387,31 @@ console.log('=== 11. 事务 ID 与 flags 的 RD 位保留 ===');
   const resp = buildNxDomain(pkt, q);
   eq((resp[0] << 8) | resp[1], 0xABCD, '事务 ID 保持');
   ok(((getFlags(resp) & 0x0100) !== 0), 'RD 位保留（请求设了 RD）');
+}
+
+console.log('=== 12. AAAA :: 应答（FR-2.4）===');
+{
+  const pkt = buildIpv4Query('v6.pangolin-sdk-toutiao.com', QTYPE_AAAA, 0x0A0B, 53);
+  const q = parseDnsQuery(pkt) as DnsQuery;
+  eq(q.qtype, QTYPE_AAAA, '解析出的 qtype = 28');
+  const resp = buildAaaaResponse(pkt, q);
+  eq(getFlags(resp) & 0x0F, RCODE_NOERROR, 'RCODE = NOERROR');
+  eq((resp[6] << 8) | resp[7], 1, 'ANCOUNT = 1');
+  const qLen = q.questionEnd - (q.dnsOffset + 12);
+  const ansOff = 12 + qLen;
+  eq(resp[ansOff], 0xC0, 'Answer name 指针高字节');
+  eq(resp[ansOff + 1], 0x0C, 'Answer name 指针低字节 → offset 12');
+  eq((resp[ansOff + 2] << 8) | resp[ansOff + 3], 28, 'TYPE = AAAA(28)');
+  eq((resp[ansOff + 4] << 8) | resp[ansOff + 5], 1, 'CLASS = IN');
+  eq((resp[ansOff + 10] << 8) | resp[ansOff + 11], 16, 'RDLENGTH = 16');
+  let allZero = true;
+  for (let i = 0; i < 16; i++) {
+    if (resp[ansOff + 12 + i] !== 0) {
+      allZero = false;
+    }
+  }
+  ok(allZero, 'RDATA 16 字节全 0 = ::');
+  eq(resp.length, 12 + qLen + 28, '总长度 = 头 + question + 28');
 }
 
 // ------------------------------------------------------------------ 汇总

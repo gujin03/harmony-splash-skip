@@ -5,15 +5,16 @@ import { Want } from '@kit.AbilityKit';
 import router from '@ohos.router';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { Log } from '../common/Logger';
+import { readVpnState } from '../common/VpnState';
 
 /**
  * 主界面（PRD v0.3.0 / FR-6 / FR-7）
  *
  * 方案：本地 VPN + DNS 拦截。
  *  - 「启动拦截」拉起 SkipVpnExtension，拦截开屏广告域名并转发其余查询
- *  - 「停止拦截」调用 stopVpnExtensionAbility（扩展的 AUTO_STOP 定时器在
- *    扩展进程里不可靠，实测不会触发，所以必须给用户手动停止入口）
- *  - 「开启通知权限」申请通知授权，供常驻状态通知使用
+ *  - 「停止拦截」调用 stopVpnExtensionAbility
+ *  - 通知栏常驻通知也带「停止拦截」按钮（FR-6.1），意图由 EntryAbility 处理
+ *  - FR-7.1：状态读扩展写下的共享文件 vpn_state.json，不再用「按钮点过没有」当状态
  *
  * ⚠️ 无障碍点击路线已按 PRD D9 整体移除。
  */
@@ -26,6 +27,63 @@ const ABILITY: string = 'SkipVpnExtension';
 struct Index {
   @State vpnState: string = '未启动';
   @State notifyState: string = '未开启';
+  /** 状态文件轮询：通知中心是系统 overlay，从通知栏停止不会触发 onPageShow */
+  private stateTimer: number = -1;
+
+  aboutToAppear(): void {
+    this.refreshVpnState();
+    this.refreshNotifyState();
+    // 每 3 秒对齐一次跨进程真相源；文件约 100 字节，代价可忽略
+    this.stateTimer = setInterval(() => {
+      this.refreshVpnState();
+    }, 3000);
+  }
+
+  /** 权限状态也要读真相，别让初始值「未开启」骗人（通知实际可能早已授权） */
+  private refreshNotifyState(): void {
+    notificationManager.isNotificationEnabled()
+      .then((enabled: boolean) => {
+        this.notifyState = enabled ? '已开启' : '未开启';
+      })
+      .catch((e: BusinessError) => {
+        Log.error(`isNotificationEnabled failed: ${e.code}`);
+      });
+  }
+
+  aboutToDisappear(): void {
+    if (this.stateTimer >= 0) {
+      clearInterval(this.stateTimer);
+      this.stateTimer = -1;
+    }
+  }
+
+  onPageShow(): void {
+    this.refreshVpnState();
+  }
+
+  /**
+   * 读共享状态文件（跨进程真相源）。
+   * 杀掉 App 再打开、或扩展创建失败，都能显示真实状态而不是一律「未启动」。
+   */
+  private refreshVpnState(): void {
+    try {
+      const ctx = getContext(this) as common.UIAbilityContext;
+      const s = readVpnState(ctx.filesDir);
+      if (s === null) {
+        return;   // 从未启动过，保持初始「未启动」
+      }
+      if (s.running) {
+        this.vpnState = '运行中（拦截广告域名，其余正常转发）';
+      } else if (s.errCode !== 0) {
+        this.vpnState = `异常：VPN 启动失败（${s.errCode}）`;
+      } else {
+        this.vpnState = '已停止';
+      }
+    } catch (e) {
+      const err = e as BusinessError;
+      Log.error(`refreshVpnState failed: code=${err.code}`);
+    }
+  }
 
   private buildWant(): Want {
     return { bundleName: BUNDLE, abilityName: ABILITY };
@@ -36,6 +94,10 @@ struct Index {
     vpnExtension.startVpnExtensionAbility(this.buildWant()).then(() => {
       this.vpnState = '运行中（拦截广告域名，其余正常转发）';
       Log.info('startVpnExtensionAbility ok');
+      // 扩展异步写状态文件，稍后按真相源校正（启动失败会写 errCode）
+      setTimeout(() => {
+        this.refreshVpnState();
+      }, 800);
     }).catch((e: BusinessError) => {
       this.vpnState = `启动失败：${e.code}`;
       Log.error(`startVpnExtensionAbility failed: ${e.code} ${e.message}`);
@@ -47,6 +109,9 @@ struct Index {
     vpnExtension.stopVpnExtensionAbility(this.buildWant()).then(() => {
       this.vpnState = '已停止';
       Log.info('stopVpnExtensionAbility ok');
+      setTimeout(() => {
+        this.refreshVpnState();
+      }, 500);
       // 补偿取消：扩展进程可能来不及取消就被回收，主进程兜一层
       notificationManager.cancel(1001).catch((err: BusinessError) => {
         // 1600007 = 通知不存在：扩展侧通常已取消成功，属正常情况
@@ -137,7 +202,7 @@ struct Index {
         .fontColor('#2E6BE6')
         .margin({ bottom: 6 })
 
-      Text('运行时会接管 DNS，停止后立即恢复')
+      Text('运行时会接管 DNS，点「停止拦截」或通知栏按钮立即恢复')
         .fontSize(12)
         .fontColor('#999999')
         .textAlign(TextAlign.Center)

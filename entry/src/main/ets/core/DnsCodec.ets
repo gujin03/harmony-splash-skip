@@ -309,6 +309,33 @@ export function buildAddressResponse(raw: Uint8Array, q: DnsQuery, ipv4: number[
   return buildDnsBody(raw, q, RCODE_NOERROR, buildAnswerA(ip));
 }
 
+/**
+ * AAAA 记录应答（FR-2.4）：qtype=28 时返回 `::`（16 字节全 0）。
+ * ⛔ 不能把 qtype=28 的查询也回 A 记录——IPv6 优先的网络里客户端拿不到可用地址，
+ *    会一直重试或降级，反而拖慢 App 进入主界面。
+ */
+function buildAnswerAAAA(): Uint8Array {
+  const out: Uint8Array = new Uint8Array(28);
+  out[0] = 0xC0;   // name: pointer → Question QNAME (offset 12)
+  out[1] = 0x0C;
+  out[2] = 0x00;   // type AAAA = 28
+  out[3] = 0x1C;
+  out[4] = 0x00;   // class IN
+  out[5] = 0x01;
+  out[6] = 0x00;   // TTL = 60
+  out[7] = 0x00;
+  out[8] = 0x00;
+  out[9] = 0x3C;
+  out[10] = 0x00;  // RDLENGTH = 16
+  out[11] = 0x10;
+  // out[12..27] 保持全 0，即 IPv6 未指定地址 ::
+  return out;
+}
+
+export function buildAaaaResponse(raw: Uint8Array, q: DnsQuery): Uint8Array {
+  return buildDnsBody(raw, q, RCODE_NOERROR, buildAnswerAAAA());
+}
+
 /** SERVFAIL：上游超时 / 在途任务超限时使用 */
 export function buildServFail(raw: Uint8Array, q: DnsQuery): Uint8Array {
   return buildDnsBody(raw, q, RCODE_SERVFAIL, null);

@@ -91,7 +91,9 @@ export const UPSTREAM_TIMEOUT_MS: number = 3000;
 export const MAX_INFLIGHT: number = 64;
 
 /**
- * PoC 运行上限（ms）：到时自动销毁 VPN，避免长时间接管流量。
- * MVP 阶段应改为手动开关（PRD FR-6）。
+ * ⛔ 2 分钟 AUTO_STOP 已移除（2026-11-14）：
+ *    ① 与 PRD §10-3「连续 24 小时不自动断开」正面冲突；
+ *    ② 扩展进程里的 setTimeout 实测不会触发，本来也不可靠。
+ * 停止只走两条明确入口：应用内「停止拦截」、通知栏「停止拦截」按钮。
+ * 规则、状态与配置仍在本文件播种子，运行时真相源见 RuleStore / VpnState。
  */
-export const AUTO_STOP_MS: number = 120000;
