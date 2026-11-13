@@ -1,6 +1,7 @@
 import VpnExtensionAbility from '@ohos.app.ability.VpnExtensionAbility';
 import vpnExtension from '@ohos.net.vpnExtension';
 import fs from '@ohos.file.fs';
+import notificationManager from '@ohos.notificationManager';
 import { Want } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { Log } from '../common/Logger';
@@ -45,6 +46,8 @@ const VPN_DNS6: string = 'fd00::1';
 const EAGAIN: number = 13900010;
 const MAX_WRITE_QUEUE: number = 256;
 const READ_BUF_SIZE: number = 4096;
+const NOTIFY_ID: number = 1001;
+const NOTIFY_UPDATE_EVERY: number = 5;   // 每 N 次拦截更新一次通知，避免刷太频
 
 function sleep(ms: number): Promise<void> {
   return new Promise<void>((resolve: () => void) => {
@@ -78,6 +81,8 @@ export default class SkipVpnExtension extends VpnExtensionAbility {
   private writeErr: number = 0;
   private dropped: number = 0;
   private dnsLikeFail: number = 0;
+  private notifyOk: boolean = false;
+  private lastNotifiedAt: number = -1;
 
   onCreate(want: Want): void {
     Log.info('VPN onCreate');
@@ -129,6 +134,7 @@ export default class SkipVpnExtension extends VpnExtensionAbility {
       }
       Log.info(`mode=${RESPONSE_MODE} upstream=${UPSTREAM_DNS} protect=${fwd.isProtected()}`);
 
+      this.publishNotification();
       this.readLoop();
       this.stopTimer = setTimeout(() => {
         this.stopVpn('auto-timeout');
@@ -231,6 +237,10 @@ export default class SkipVpnExtension extends VpnExtensionAbility {
         ? buildAddressResponse(raw, q, [0, 0, 0, 0])
         : buildNxDomain(raw, q);
       this.enqueueWrite(buildResponsePacket(raw, q, dns));
+      if (this.blocked - this.lastNotifiedAt >= NOTIFY_UPDATE_EVERY) {
+        this.lastNotifiedAt = this.blocked;
+        this.publishNotification();
+      }
       return;
     }
 
@@ -272,6 +282,47 @@ export default class SkipVpnExtension extends VpnExtensionAbility {
     });
   }
 
+  /** 常驻通知：显示运行状态与统计（FR-6.1 / FR-6.2） */
+  private async publishNotification(): Promise<void> {
+    try {
+      const request: notificationManager.NotificationRequest = {
+        id: NOTIFY_ID,
+        content: {
+          notificationContentType: notificationManager.ContentType.NOTIFICATION_CONTENT_BASIC_TEXT,
+          normal: {
+            title: '开屏广告拦截 · 运行中',
+            text: `已拦截 ${this.blocked} · 转发 ${this.fwdOk} · 失败 ${this.fwdFail}`,
+            additionalText: '打开应用可停止拦截'
+          }
+        },
+        isOngoing: true
+      };
+      await notificationManager.publish(request);
+      if (!this.notifyOk) {
+        this.notifyOk = true;
+        Log.info('notification published');
+      }
+    } catch (e) {
+      const err = e as BusinessError;
+      if (this.notifyOk || this.blocked === 0) {
+        Log.error(`publish notification failed: code=${err.code} msg=${err.message}`);
+      }
+      this.notifyOk = false;
+    }
+  }
+
+  private async cancelNotification(): Promise<void> {
+    try {
+      await notificationManager.cancel(NOTIFY_ID);
+    } catch (e) {
+      const err = e as BusinessError;
+      // 1600007 = 通知不存在，属正常（可能已被取消过）
+      if (err.code !== 1600007) {
+        Log.error(`cancel notification failed: code=${err.code}`);
+      }
+    }
+  }
+
   private enqueueWrite(pkt: Uint8Array): void {
     if (this.writeQueue.length >= MAX_WRITE_QUEUE) {
       this.dropped++;
@@ -310,9 +361,8 @@ export default class SkipVpnExtension extends VpnExtensionAbility {
   }
 
   private async stopVpn(reason: string): Promise<void> {
-    if (!this.conn) {
-      return;
-    }
+    // ⚠️ 不再因 conn 为 null 提前返回：扩展被系统 stop 时 conn 可能已释放，
+    //    但通知与统计必须照样收尾，否则会留下「运行中」的僵尸通知。
     this.running = false;
     if (this.stopTimer >= 0) {
       clearTimeout(this.stopTimer);
@@ -323,15 +373,19 @@ export default class SkipVpnExtension extends VpnExtensionAbility {
       await fwd.stop();
       this.forwarder = null;
     }
-    try {
-      await this.conn.destroy();
-      Log.info('VPN destroyed');
-    } catch (e) {
-      const err = e as BusinessError;
-      Log.error(`VPN destroy failed: code=${err.code}`);
-    }
+    const conn = this.conn;
     this.conn = null;
     this.tunFd = -1;
+    if (conn !== null) {
+      try {
+        await conn.destroy();
+        Log.info('VPN destroyed');
+      } catch (e) {
+        const err = e as BusinessError;
+        Log.error(`VPN destroy failed: code=${err.code}`);
+      }
+    }
+    await this.cancelNotification();
     Log.info(`STATS (${reason}) dns=${this.dnsHits} block=${this.blocked} ` +
       `fwdOk=${this.fwdOk} fwdFail=${this.fwdFail} overload=${this.overload} ` +
       `written=${this.written} writeErr=${this.writeErr} dropped=${this.dropped} dnsLikeFail=${this.dnsLikeFail} ` +
@@ -340,6 +394,10 @@ export default class SkipVpnExtension extends VpnExtensionAbility {
 
   onDestroy(): void {
     Log.info('VPN onDestroy');
+    // 同步发起取消，不 await：进程会被系统回收，await 可能等不到
+    notificationManager.cancel(NOTIFY_ID).catch((e: BusinessError) => {
+      Log.error(`cancel notify failed: code=${e.code}`);
+    });
     this.stopVpn('onDestroy');
   }
 }
