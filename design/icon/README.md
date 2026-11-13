@@ -49,7 +49,7 @@ entry/src/main/resources/base/media/
 矢量真相源是 `generate_icon.swift`（macOS 自带 swiftc，零第三方依赖）：
 
 ```bash
-cd ~/WorkBuddy/harmony-splash-skip/design/icon
+cd design/icon   # 进入本目录（仓库内相对路径）
 swiftc -O generate_icon.swift -o /tmp/gen_icon && /tmp/gen_icon
 ```
 

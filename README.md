@@ -4,7 +4,7 @@
 
 | 文档 | 位置 |
 |---|---|
-| 需求文档 | `~/WorkBuddy/常用空间/2026-11-10-鸿蒙开屏跳过工具需求文档.md`（PRD v0.3.0-7） |
+| 需求文档 | 本地维护，未随仓库发布（如需可单独提供） |
 | 架构决策 | `docs/ADR-001-DNS拦截架构决策.md` |
 | 开发差距清单 | `docs/开发差距分析.md` |
 | 真机验证手册 | `docs/真机PoC验证手册.md` |
@@ -38,7 +38,10 @@
 ## 二、编译与安装（命令行，真机已验证）
 
 ```bash
-cd ~/WorkBuddy/harmony-splash-skip
+cd harmony-splash-skip   # 进入仓库根目录
+
+# ⚠️ 以下为 macOS 示例路径，请按你的 DevEco Studio 实际安装位置调整
+#    （Linux/Windows 用户请替换为对应路径；DevEco 26 内置 SDK 与 JBR 路径相同）
 export DEVECO_SDK_HOME=/Applications/DevEco-Studio.app/Contents/sdk
 export DEVECO_JAVA_HOME=/Applications/DevEco-Studio.app/Contents/jbr
 export NODE_HOME=/Applications/DevEco-Studio.app/Contents/tools/node
@@ -46,9 +49,10 @@ export NODE_HOME=/Applications/DevEco-Studio.app/Contents/tools/node
 /Applications/DevEco-Studio.app/Contents/tools/hvigor/bin/hvigorw \
   assembleHap --mode module -p product=default -p buildMode=debug --no-daemon
 
+# hdc 路径同样按你的 SDK 实际位置调整（macOS 示例）
 HDC=$HOME/Library/OpenHarmony/Sdk/23/toolchains/hdc
 "$HDC" install -r entry/build/default/outputs/default/entry-default-signed.hap
-"$HDC" shell aa start -a EntryAbility -b com.liuqi.splashskip
+"$HDC" shell aa start -a EntryAbility -b com.liuqi.splashskip   # bundleName 见 AppScope/app.json5
 ```
 
 > `hvigorw` / `ohpm` 不在 `PATH`，必须用绝对路径。签名配置在 `.sign/sign-config.json5`（优先级高于 `build-profile.json5`，⛔ 不入库）。

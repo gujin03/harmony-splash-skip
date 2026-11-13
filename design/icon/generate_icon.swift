@@ -22,7 +22,7 @@ import UniformTypeIdentifiers
 import CoreText
 
 let S: CGFloat = 1024
-let OUT = "$HOME/WorkBuddy/harmony-splash-skip/design/icon/output"
+let OUT = "./output"   // 图标输出目录（相对路径，可改为你想要的绝对路径）
 
 // MARK: - 基础工具
 

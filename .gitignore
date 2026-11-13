@@ -23,6 +23,9 @@ cxx/.cxx/
 # ---- 本地环境 ----
 local.properties
 
+# ---- 本地私有文档（含本机路径/用户名，禁止入库；公开版见 README.md）----
+README.local.md
+
 # ---- 备份与临时文件 ----
 # ⚠️ 不要把 *.bak 放进 resources/：资源打包器会把它当资源扫描并报 module_desc conflict
 *.bak

@@ -25,7 +25,9 @@
 ## 一、编译与安装
 
 ```bash
-cd ~/WorkBuddy/harmony-splash-skip
+cd harmony-splash-skip   # 进入仓库根目录
+
+# ⚠️ 以下为 macOS 示例路径，请按你的 DevEco Studio / SDK 实际安装位置调整
 export DEVECO_SDK_HOME=/Applications/DevEco-Studio.app/Contents/sdk
 export DEVECO_JAVA_HOME=/Applications/DevEco-Studio.app/Contents/jbr
 export NODE_HOME=/Applications/DevEco-Studio.app/Contents/tools/node
@@ -33,9 +35,10 @@ export NODE_HOME=/Applications/DevEco-Studio.app/Contents/tools/node
 /Applications/DevEco-Studio.app/Contents/tools/hvigor/bin/hvigorw \
   assembleHap --mode module -p product=default -p buildMode=debug --no-daemon
 
+# hdc 路径按你的 SDK 实际位置调整（macOS 两种常见布局示例）
 HDC=/Applications/DevEco-Studio.app/Contents/sdk/default/openharmony/toolchains/hdc
 "$HDC" install -r entry/build/default/outputs/default/entry-default-signed.hap
-"$HDC" shell aa start -a EntryAbility -b com.liuqi.splashskip
+"$HDC" shell aa start -a EntryAbility -b com.liuqi.splashskip   # bundleName 见 app.json5
 ```
 
 装机后先确认扩展声明正确：
@@ -202,7 +205,7 @@ HDC=/Applications/DevEco-Studio.app/Contents/sdk/default/openharmony/toolchains/
 本轮中国联通验证全程由 hdc 完成，无需人工操作手机：
 
 ```bash
-HDC=$HOME/Library/OpenHarmony/Sdk/23/toolchains/hdc; T=<device-id>
+HDC=$HOME/Library/OpenHarmony/Sdk/23/toolchains/hdc   # 或你的 SDK 实际路径; T=<device-id>
 
 # 1. 工具 App 拉前台 → 自动点「启动拦截」（1100×2380 屏，按钮中心 550,1074）
 "$HDC" -t $T shell aa start -a EntryAbility -b com.liuqi.splashskip
