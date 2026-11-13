@@ -22,6 +22,7 @@ export interface DnsQuery {
   questionEnd: number;    // Question 段结束位置（不含）
   udpOffset: number;      // UDP 头在包内的偏移
   ipHeaderLen: number;    // IPv4 = IHL，IPv6 = 40
+  dnsEnd: number;         // DNS 报文结束位置（min(包长, udpOffset+udpLen)）
 }
 
 interface NameParse {
@@ -215,7 +216,8 @@ export function parseDnsQuery(packet: Uint8Array): DnsQuery | null {
     dnsOffset: dnsOff,
     questionEnd: qEnd,
     udpOffset: udpOff,
-    ipHeaderLen: ipLen
+    ipHeaderLen: ipLen,
+    dnsEnd: udpEnd
   };
   return q;
 }

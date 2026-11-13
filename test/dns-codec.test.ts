@@ -193,6 +193,7 @@ console.log('\n=== 1. IPv4 A 查询解析 ===');
     eq(q.udpOffset, 20, 'udpOffset');
     eq(q.dnsOffset, 28, 'dnsOffset');
     eq(q.questionEnd - q.dnsOffset, 12 + 30 + 4, 'question 段长度（12 头 + 30 名字 + 4 类型/类）');
+    eq(q.dnsEnd - q.dnsOffset, 46, 'dnsEnd 覆盖完整 DNS 报文（含 Question 段）');
   }
 }
 
