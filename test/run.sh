@@ -5,12 +5,16 @@
 #      核心模块必须自包含（零本地 import），否则 node 无法解析扩展名；
 #      测试文件里纯类型必须用 `import type`。
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-NODE="/Applications/DevEco-Studio.app/Contents/tools/node/bin/node"
 BUILD="$ROOT/.test-build"
 CORE="$ROOT/entry/src/main/ets/core"
 
-if [ ! -x "$NODE" ]; then
-  echo "找不到 node：$NODE"
+# 解析 node：优先 $NODE_HOME/bin/node，否则回退 PATH 中的 node（等价 which node）
+if [ -n "$NODE_HOME" ] && [ -x "$NODE_HOME/bin/node" ]; then
+  NODE="$NODE_HOME/bin/node"
+elif command -v node >/dev/null 2>&1; then
+  NODE="$(command -v node)"
+else
+  echo "找不到 node：请设置 NODE_HOME（指向含 bin/node 的目录，如 DevEco Studio 自带的 Node 路径），或把 node 加入 PATH。"
   exit 1
 fi
 
