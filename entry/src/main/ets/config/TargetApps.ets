@@ -27,6 +27,11 @@ export const BLACKLIST: Array<DomainRule> = [
   // ---------- 广点通（腾讯）----------
   { domain: 'gdt.qq.com', matchType: MATCH_SUFFIX, enabled: true, note: '广点通（实测 mi.21 次 / win. / v2.）' },
   { domain: 'sdk.e.qq.com', matchType: MATCH_EXACT, enabled: true, note: '广点通 SDK 入口（与 gdt.qq.com 同 IP 段 157.255.x）；⛔ 不可放宽为 e.qq.com，腾讯大量业务共用' },
+  // ---------- 华为广告（ADX）----------
+  // ⛔ 必须精确到主机名：dbankcloud.cn 下还有云空间/健康数据/账号 GRS 等系统服务，
+  //    拦整个域会波及华为账号与云服务（PRD R-13 同类约束）。
+  { domain: 'adx-drcn.op.dbankcloud.cn', matchType: MATCH_EXACT, enabled: true, note: '华为广告交易平台 ADX（实时竞价；诊断 topForwarded 2 次）' },
+  { domain: 'sdkdserver-drcn.op.dbankcloud.cn', matchType: MATCH_EXACT, enabled: true, note: '华为广告 SDK 服务端（同 op 域，命名推断，实测观察中）' },
   // ---------- 聚合广告 ----------
   { domain: 'sogaha.cn', matchType: MATCH_SUFFIX, enabled: true, note: '聚合广告 SDK（实测 ctrace.15 次 / adx.7 次）' },
   // ---------- 待实测确认（默认关，避免误伤业务）----------
