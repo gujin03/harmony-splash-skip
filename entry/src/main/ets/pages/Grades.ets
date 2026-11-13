@@ -1,4 +1,3 @@
-import router from '@ohos.router';
 import common from '@ohos.app.ability.common';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { Log } from '../common/Logger';
@@ -51,7 +50,7 @@ struct Grades {
   }
 
   private store(): GradeStore {
-    const ctx = getContext(this) as common.UIAbilityContext;
+    const ctx = this.getUIContext().getHostContext()! as common.UIAbilityContext;
     return new GradeStore(ctx.filesDir);
   }
 
@@ -116,7 +115,7 @@ struct Grades {
         Button('返回')
           .fontSize(13)
           .height(32)
-          .onClick(() => router.back())
+          .onClick(() => this.getUIContext().getRouter().back())
         Text('效果分级')
           .fontSize(20)
           .fontWeight(FontWeight.Bold)

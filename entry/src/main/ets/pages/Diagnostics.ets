@@ -1,5 +1,4 @@
 import fs from '@ohos.file.fs';
-import router from '@ohos.router';
 import common from '@ohos.app.ability.common';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { Log } from '../common/Logger';
@@ -20,8 +19,8 @@ const DIAG_FILE: string = '/diag.json';
 struct Diagnostics {
   @State summary: string = '（尚未读取）';
   @State rateText: string = '';
-  @State topBlocked: string[] = [];
-  @State topForwarded: string[] = [];
+  @State topBlocked: DomainCount[] = [];
+  @State topForwarded: DomainCount[] = [];
   @State recent: string[] = [];
   @State msg: string = '';
   /** 场景提示（PRD R-13）：拦截 0 次时提示可能为自有广告，避免误判工具失效 */
@@ -48,7 +47,7 @@ struct Diagnostics {
       return;
     }
     try {
-      const ctx = getContext(this) as common.UIAbilityContext;
+      const ctx = this.getUIContext().getHostContext()! as common.UIAbilityContext;
       const store = new RuleStore(ctx.filesDir);
       store.init();
       store.addSessionAllow(host);
@@ -63,7 +62,7 @@ struct Diagnostics {
 
   private load(): void {
     try {
-      const ctx = getContext(this) as common.UIAbilityContext;
+      const ctx = this.getUIContext().getHostContext()! as common.UIAbilityContext;
       const path: string = ctx.filesDir + DIAG_FILE;
       if (!fs.accessSync(path)) {
         this.msg = '暂无诊断快照：请先启动拦截并让应用产生一次 DNS 查询';
@@ -86,8 +85,8 @@ struct Diagnostics {
       this.msg = `快照时间：${this.fmtTime(snap.updatedAt)}`;
 
       this.hintText = this.buildHint(snap);
-      this.topBlocked = this.fmtTop(snap.topBlocked);
-      this.topForwarded = this.fmtTop(snap.topForwarded);
+      this.topBlocked = snap.topBlocked;
+      this.topForwarded = snap.topForwarded;
       this.recent = this.fmtRecent(snap.recent);
     } catch (e) {
       const err = e as BusinessError;
@@ -125,20 +124,19 @@ struct Diagnostics {
   }
 
   /** FR-5.4：把「转发 Top10」里的一条直接加进黑名单，扩展下一次查询即生效 */
-  private addBlackFromTop(item: string): void {
-    const parts: Array<string> = item.split('  ');
-    const host: string = parts.length > 1 ? parts[1].trim() : '';
-    if (host.length === 0 || host === '（暂无）') {
+  private addBlackFromTop(host: string): void {
+    const h: string = host.trim();
+    if (h.length === 0 || h === '（暂无）') {
       return;
     }
     try {
-      const ctx = getContext(this) as common.UIAbilityContext;
+      const ctx = this.getUIContext().getHostContext()! as common.UIAbilityContext;
       const store = new RuleStore(ctx.filesDir);
       store.init();
-      const done: boolean = store.addBlacklistDomain(host, '诊断页 TopN 一键加黑');
+      const done: boolean = store.addBlacklistDomain(h, '诊断页 TopN 一键加黑');
       this.topMsg = done
-        ? `已加入黑名单：${host}（下一次查询生效，无需重启 VPN）`
-        : `规则已存在：${host}`;
+        ? `已加入黑名单：${h}（下一次查询生效，无需重启 VPN）`
+        : `规则已存在：${h}`;
     } catch (e) {
       const err = e as BusinessError;
       this.topMsg = `加黑失败：${err.code}`;
@@ -155,12 +153,8 @@ struct Diagnostics {
     return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
   }
 
-  private fmtTop(list: DomainCount[]): string[] {
-    const out: string[] = [];
-    for (let i = 0; i < list.length; i++) {
-      out.push(`${list[i].count}  ${list[i].domain}`);
-    }
-    return out.length > 0 ? out : ['（暂无）'];
+  private fmtTopLine(c: DomainCount): string {
+    return `${c.count}  ${c.domain}`;
   }
 
   private fmtRecent(list: DiagRecord[]): string[] {
@@ -183,26 +177,34 @@ struct Diagnostics {
       .margin({ top: 16, bottom: 6 })
   }
 
-  /** 可点击的 TopN 列表；canAdd=true 时每行带「加黑」按钮 */
+  /** 可点击的 TopN 列表；canAdd=true 时每行带「加黑」按钮（直接拿原始 domain，不反解字符串） */
   @Builder
-  topList(items: string[], color: string, canAdd: boolean) {
-    ForEach(items, (item: string) => {
-      Row() {
-        Text(item)
-          .fontSize(12)
-          .fontColor(color)
-          .layoutWeight(1)
-        if (canAdd) {
-          Button('加黑')
-            .fontSize(10)
-            .height(26)
-            .backgroundColor('#B03030')
-            .onClick(() => this.addBlackFromTop(item))
+  topList(items: DomainCount[], color: string, canAdd: boolean) {
+    if (items.length === 0) {
+      Text('（暂无）')
+        .fontSize(12)
+        .fontColor(color)
+        .width('100%')
+        .margin({ bottom: 3 })
+    } else {
+      ForEach(items, (item: DomainCount) => {
+        Row() {
+          Text(this.fmtTopLine(item))
+            .fontSize(12)
+            .fontColor(color)
+            .layoutWeight(1)
+          if (canAdd) {
+            Button('加黑')
+              .fontSize(10)
+              .height(26)
+              .backgroundColor('#B03030')
+              .onClick(() => this.addBlackFromTop(item.domain))
+          }
         }
-      }
-      .width('100%')
-      .margin({ bottom: 3 })
-    }, (item: string, idx: number) => `${idx}-${item}`)
+        .width('100%')
+        .margin({ bottom: 3 })
+      }, (item: DomainCount, idx: number) => `${idx}-${item.domain}-${item.count}`)
+    }
   }
 
   @Builder
@@ -222,7 +224,7 @@ struct Diagnostics {
         Button('返回')
           .fontSize(13)
           .height(32)
-          .onClick(() => router.back())
+          .onClick(() => this.getUIContext().getRouter().back())
         Blank()
         Button('刷新')
           .fontSize(13)

@@ -2,7 +2,6 @@ import vpnExtension from '@ohos.net.vpnExtension';
 import notificationManager from '@ohos.notificationManager';
 import common from '@ohos.app.ability.common';
 import { Want } from '@kit.AbilityKit';
-import router from '@ohos.router';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { Log } from '../common/Logger';
 import { readVpnState } from '../common/VpnState';
@@ -38,7 +37,7 @@ struct Index {
   aboutToAppear(): void {
     this.refreshVpnState();
     this.refreshNotifyState();
-    const ctx = getContext(this) as common.UIAbilityContext;
+    const ctx = this.getUIContext().getHostContext()! as common.UIAbilityContext;
     this.showOnboard = !isOnboarded(ctx.filesDir);
     // 每 3 秒对齐跨进程真相源与暂停截止时间；文件都很小，代价可忽略
     this.stateTimer = setInterval(() => {
@@ -60,7 +59,7 @@ struct Index {
   }
 
   private ctx(): common.UIAbilityContext {
-    return getContext(this) as common.UIAbilityContext;
+    return this.getUIContext().getHostContext()! as common.UIAbilityContext;
   }
 
   /** 读共享状态文件；杀掉 App 再打开、或扩展创建失败，都显示真实状态 */
@@ -171,7 +170,7 @@ struct Index {
 
   private async requestNotify(): Promise<void> {
     try {
-      const ctx = getContext(this) as common.UIAbilityContext;
+      const ctx = this.getUIContext().getHostContext()! as common.UIAbilityContext;
       await notificationManager.requestEnableNotification(ctx);
       const enabled: boolean = await notificationManager.isNotificationEnabled();
       this.notifyState = enabled ? '已开启' : '未开启';
@@ -184,7 +183,7 @@ struct Index {
   }
 
   private goPage(url: string): void {
-    router.pushUrl({ url: url }).catch((err: BusinessError) => {
+    this.getUIContext().getRouter().pushUrl({ url: url }).catch((err: BusinessError) => {
       Log.error(`push ${url} failed: ${err.code}`);
     });
   }

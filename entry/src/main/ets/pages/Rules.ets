@@ -1,4 +1,3 @@
-import router from '@ohos.router';
 import common from '@ohos.app.ability.common';
 import fs from '@ohos.file.fs';
 import picker from '@ohos.file.picker';
@@ -45,7 +44,7 @@ struct Rules {
   }
 
   private store(): RuleStore {
-    const ctx = getContext(this) as common.UIAbilityContext;
+    const ctx = this.getUIContext().getHostContext()! as common.UIAbilityContext;
     const s = new RuleStore(ctx.filesDir);
     s.init();
     return s;
@@ -178,7 +177,7 @@ struct Rules {
     this.exporting = true;
     this.ioMsg = '正在等待系统保存窗口…';
     try {
-      const ctx = getContext(this) as common.UIAbilityContext;
+      const ctx = this.getUIContext().getHostContext()! as common.UIAbilityContext;
       const docPicker = new picker.DocumentViewPicker(ctx);
       const opt = new picker.DocumentSaveOptions();
       opt.newFileNames = [`splashskip-rules-${this.stamp()}.json`];
@@ -243,7 +242,7 @@ struct Rules {
     this.importing = true;
     this.ioMsg = '正在等待文件选择…';
     try {
-      const ctx = getContext(this) as common.UIAbilityContext;
+      const ctx = this.getUIContext().getHostContext()! as common.UIAbilityContext;
       const docPicker = new picker.DocumentViewPicker(ctx);
       const opt = new picker.DocumentSelectOptions();
       opt.maxSelectNumber = 1;
@@ -314,7 +313,7 @@ struct Rules {
         Button('返回')
           .fontSize(13)
           .height(32)
-          .onClick(() => router.back())
+          .onClick(() => this.getUIContext().getRouter().back())
         Text('规则管理')
           .fontSize(20)
           .fontWeight(FontWeight.Bold)

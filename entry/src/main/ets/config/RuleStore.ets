@@ -28,6 +28,8 @@ import {
   RULE_SCHEMA_VERSION
 } from '../core/RuleSchema';
 import type { ImportResult } from '../core/RuleSchema';
+import { decideInit } from '../core/RuleInit';
+import type { InitAction } from '../core/RuleInit';
 import { BLACKLIST, WHITELIST } from './TargetApps';
 import { Log } from '../common/Logger';
 
@@ -84,9 +86,22 @@ export class RuleStore {
       return;
     }
     const data: RulesFile | null = this.readFile();
-    if (data !== null) {
-      this.apply(data, 'loaded');
+    // ⚠️ 用纯函数决策，F-2 不变式落在可单测的地方：
+    //    文件存在但读不出来（半写／损坏／权限异常）→ 'reseed'，
+    //    绝不能静默保留空规则（VPN 照跑却一条都不拦）。
+    const action: InitAction = decideInit(true, data !== null);
+    if (action === 'load') {
+      this.apply(data as RulesFile, 'loaded');
+      return;
     }
+    Log.error('RuleStore file unreadable, re-seeding from built-in defaults');
+    this.persist({
+      schemaVersion: SCHEMA_VERSION,
+      updatedAt: 0,
+      blacklist: BLACKLIST,
+      whitelist: WHITELIST,
+      sessionAllow: []
+    });
   }
 
   /** 每次派发前调用；500ms 内最多读一次文件 */
