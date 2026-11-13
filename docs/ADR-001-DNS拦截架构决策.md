@@ -116,11 +116,21 @@ export function buildResponsePacket(raw: Uint8Array, q: DnsQuery, dnsPayload: Ui
 
 ---
 
-## 未决项（等 V4/V5/V6）
+## 未决项（V4/V5/V6 后的状态，2026-11-13 真机）
 
-| # | 待定 | 影响 |
+| # | 待定 | 状态 |
 |---|---|---|
-| 1 | 应答用 NXDOMAIN 还是 `0.0.0.0` | 决定默认 `behavior.response`，两者都已实现，由实测选一个 |
-| 2 | 上游 DNS 选择（系统原 DNS / 硬编码 `223.5.5.5`） | 决定 `UpstreamForwarder` 的初始化方式 |
-| 3 | `protect()` 是否可用 | **若不可用，转发路线整体作废**，需退到 PRD §9.5 方案 B |
-| 4 | 是否需要 TCP 53 兜底（大响应/截断） | 绝大多数 DNS 走 UDP，暂不做 |
+| 1 | 应答用 NXDOMAIN 还是 `0.0.0.0` | 🟡 **暂定 `0.0.0.0`**：两种都能让车来了无开屏广告进主界面，但 `0.0.0.0` 捕获的广告域名更完整（4 类 vs 2 类）。单次观察，需多次复验 |
+| 2 | 上游 DNS 选择 | ✅ 已用 `223.5.5.5`，转发稳定（`FWD` 全部成功） |
+| 3 | `protect()` 是否可用 | ✅ **可用**：`UDPSocket.getSocketFd()` → `VpnConnection.protect(fd)` 返回成功，真机日志 `socketFd=46 protect=OK`，未观察到回环 |
+| 4 | 是否需要 TCP 53 兜底 | 暂不做（实测查询均为 UDP） |
+
+## 新增风险：AD-6 · DNS 覆盖率受限
+
+**实测（2026-11-13）**：走系统 resolver 的解析（如 `ping` 触发的查询）**没有进入 TUN**——TUN 只看到 IPv6 MLD 组播与少量 TCP。而车来了、华为音乐这类 **App 自己发起的 DNS 查询正常进入并被处理**。
+
+**结论**：本方案只能覆盖「App 自行解析」的流量。`VpnConfig` 的全部字段里没有「强制系统 DNS 走 VPN」的开关（`isBlocking` 是 fd 阻塞模式，不是流量开关；`trustedApplications` / `blockedApplications` 只按包名选择是否走 VPN）。
+
+**影响**：覆盖率取决于目标 App 的 DNS 实现，不可承诺全覆盖。对应 PRD **R-12**。
+
+**后续可选方向**：① 诊断页按 App 统计「是否捕获到查询」；② 评估 `isInternal` / `trustedApplications` 组合是否改变行为；③ 若覆盖率不足，回到 PRD §9.5 的方案 B（VPS + AdGuard Home，走系统「私人 DNS」）。
