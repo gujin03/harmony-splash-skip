@@ -4,6 +4,7 @@ import fs from '@ohos.file.fs';
 import { Want } from '@kit.AbilityKit';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { Log } from '../common/Logger';
+import { parseDnsQuery } from '../core/DnsCodec';
 
 /**
  * VPN PoC v3：同时接管 IPv4 / IPv6 的 DNS
@@ -24,54 +25,6 @@ function sleep(ms: number): Promise<void> {
       resolve();
     }, ms);
   });
-}
-
-function parseQname(bytes: Uint8Array, off: number): string {
-  const labels: string[] = [];
-  let i = off;
-  while (i < bytes.length && bytes[i] !== 0) {
-    const len = bytes[i];
-    i++;
-    let s = '';
-    for (let j = 0; j < len && i < bytes.length; j++) {
-      s += String.fromCharCode(bytes[i]);
-      i++;
-    }
-    labels.push(s);
-  }
-  return labels.join('.');
-}
-
-
-function ipv6UdpOffset(bytes: Uint8Array, n: number): number {
-  let off = 40;
-  let nh = bytes[6];
-  let guard = 0;
-  while (guard < 8) {
-    guard++;
-    if (nh === 17) {
-      return off;
-    }
-    if (nh === 0 || nh === 43 || nh === 60) {
-      if (off + 2 > n) {
-        return -1;
-      }
-      const len = (bytes[off + 1] + 1) * 8;
-      nh = bytes[off];
-      off += len;
-      continue;
-    }
-    if (nh === 44) {
-      if (off + 8 > n) {
-        return -1;
-      }
-      nh = bytes[off];
-      off += 8;
-      continue;
-    }
-    return -1;
-  }
-  return -1;
 }
 
 export default class SkipVpnExtension extends VpnExtensionAbility {
@@ -113,9 +66,8 @@ export default class SkipVpnExtension extends VpnExtensionAbility {
   private async readLoop(): Promise<void> {
     this.running = true;
     const buf = new ArrayBuffer(2048);
-    let count = 0;
-    let ipv4 = 0;
-    let ipv6 = 0;
+    let reads = 0;
+    let nonDns = 0;
     let dnsHits = 0;
     while (this.running && this.tunFd >= 0) {
       try {
@@ -124,60 +76,37 @@ export default class SkipVpnExtension extends VpnExtensionAbility {
           await sleep(10);
           continue;
         }
-        count++;
+        reads++;
         const bytes = new Uint8Array(buf, 0, n);
-        const ipVer = (bytes[0] >> 4) & 0x0f;
 
-        if (ipVer === 4 && n >= 28) {
-          ipv4++;
-          const ihl = (bytes[0] & 0x0f) * 4;
-          if (bytes[9] !== 17 || n < ihl + 8) {
-            continue;
-          }
-          const dstPort = (bytes[ihl + 2] << 8) | bytes[ihl + 3];
-          if (dstPort !== 53) {
-            if (ipv4 <= 3) {
-              Log.info(`VPN v4 #${count} udp dstPort=${dstPort}`);
+        // 解析统一走 DnsCodec（ADR-2 / AD-3）：纯函数，返回 null 即非 DNS 53
+        const q = parseDnsQuery(bytes);
+        if (q === null) {
+          nonDns++;
+          // 诊断：前 10 条非 DNS 包打出头部概要，用于区分「真的没有 DNS」与「解析判错」
+          if (nonDns <= 10) {
+            const ipVer = (bytes[0] >> 4) & 0x0f;
+            let detail = `ipVer=${ipVer} n=${n}`;
+            if (ipVer === 4 && n >= 20) {
+              const ihl = (bytes[0] & 0x0f) * 4;
+              const proto = bytes[9];
+              let dp = -1;
+              if (proto === 17 && n >= ihl + 4) {
+                dp = (bytes[ihl + 2] << 8) | bytes[ihl + 3];
+              }
+              detail += ` ihl=${ihl} proto=${proto} dstPort=${dp}`;
+            } else if (ipVer === 6 && n >= 41) {
+              detail += ` nextHeader=${bytes[6]}`;
             }
-            continue;
-          }
-          const qname = parseQname(bytes, ihl + 8 + 12);
-          dnsHits++;
-          Log.info(`VPN DNS(v4) #${dnsHits} qname=${qname} n=${n}`);
-          if (dnsHits >= 1) {
-            await this.stopVpn('dns-captured');
+            Log.info(`VPN skip #${reads} ${detail}`);
           }
           continue;
         }
 
-        if (ipVer === 6 && n >= 48) {
-          ipv6++;
-          const udpOff = ipv6UdpOffset(bytes, n);
-          if (udpOff < 0 || n < udpOff + 8) {
-            if (ipv6 <= 3) {
-              Log.info(`VPN v6 #${count} nextHeader=${bytes[6]} (no UDP)`);
-            }
-            continue;
-          }
-          const dstPort = (bytes[udpOff + 2] << 8) | bytes[udpOff + 3];
-          if (dstPort !== 53) {
-            if (ipv6 <= 3) {
-              Log.info(`VPN v6 #${count} udp dstPort=${dstPort}`);
-            }
-            continue;
-          }
-          const qname = parseQname(bytes, udpOff + 8 + 12);
-          dnsHits++;
-          Log.info(`VPN DNS(v6) #${dnsHits} qname=${qname} n=${n}`);
-          if (dnsHits >= 1) {
-            await this.stopVpn('dns-captured');
-          }
-          continue;
-        }
-
-        if (count <= 3) {
-          Log.info(`VPN skip #${count} n=${n} ipVer=${ipVer}`);
-        }
+        dnsHits++;
+        Log.info(`VPN DNS(v${q.ipVersion}) #${dnsHits} qname=${q.qname} qtype=${q.qtype} n=${n}`);
+        // PoC 行为保持不变：抓到一条即销毁
+        await this.stopVpn('dns-captured');
       } catch (e) {
         const err = e as BusinessError;
         if (err.code === EAGAIN) {
@@ -188,7 +117,7 @@ export default class SkipVpnExtension extends VpnExtensionAbility {
         break;
       }
     }
-    Log.info(`VPN readLoop exit (reads=${count}, v4=${ipv4}, v6=${ipv6}, dns=${dnsHits})`);
+    Log.info(`VPN readLoop exit (reads=${reads}, nonDns=${nonDns}, dns=${dnsHits})`);
   }
 
   private async stopVpn(reason: string): Promise<void> {

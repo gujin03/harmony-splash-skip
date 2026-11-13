@@ -29,3 +29,6 @@ local.properties
 *.tmp
 *.orig
 *.swp
+
+# ---- 测试生成目录 ----
+.test-build/
