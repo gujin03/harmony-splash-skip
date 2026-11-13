@@ -18,22 +18,36 @@ export const TARGET_BUNDLES: Array<string> = [
  *    需逐 App 实测后再决定是否开启（PRD §4.4 难点）。
  */
 export const BLACKLIST: Array<DomainRule> = [
-  { domain: 'pangolin-sdk-toutiao.com', matchType: MATCH_SUFFIX, enabled: true, note: '穿山甲 API' },
-  { domain: 'pangolin-sdk-toutiao1.com', matchType: MATCH_SUFFIX, enabled: true, note: '穿山甲备用' },
-  { domain: 'pangolin-sdk-toutiao-b.com', matchType: MATCH_SUFFIX, enabled: true, note: '穿山甲日志' },
-  { domain: 'zijieapi.com', matchType: MATCH_SUFFIX, enabled: true, note: '字节 SDK 日志（真机实测抓到）' },
-  { domain: 'gdt.qq.com', matchType: MATCH_SUFFIX, enabled: true, note: '广点通' },
-  { domain: 'sogaha.cn', matchType: MATCH_SUFFIX, enabled: true, note: '聚合广告 SDK（车来了实测）' },
-  { domain: 'pglstatp-toutiao.com', matchType: MATCH_SUFFIX, enabled: false, note: '穿山甲 CDN，可能与正常素材共用，默认不拦' }
+  // ---------- 穿山甲（字节）----------
+  { domain: 'pangolin-sdk-toutiao.com', matchType: MATCH_SUFFIX, enabled: true, note: '穿山甲 API（实测 api-access.* 9 次）' },
+  { domain: 'pangolin-sdk-toutiao1.com', matchType: MATCH_SUFFIX, enabled: true, note: '穿山甲备用（实测 api-access.*1 2 次）' },
+  { domain: 'pangolin-sdk-toutiao-b.com', matchType: MATCH_SUFFIX, enabled: true, note: '穿山甲日志（实测 log-api.*）' },
+  { domain: 'zijieapi.com', matchType: MATCH_SUFFIX, enabled: true, note: '字节 SDK（实测 log./mon./log-klink.）' },
+  { domain: 'p3-be-pack-sign.pglstatp-toutiao.com', matchType: MATCH_EXACT, enabled: true, note: '穿山甲素材包签名，纯广告元数据（诊断 topForwarded 2 次）' },
+  // ---------- 广点通（腾讯）----------
+  { domain: 'gdt.qq.com', matchType: MATCH_SUFFIX, enabled: true, note: '广点通（实测 mi.21 次 / win. / v2.）' },
+  { domain: 'sdk.e.qq.com', matchType: MATCH_EXACT, enabled: true, note: '广点通 SDK 入口（与 gdt.qq.com 同 IP 段 157.255.x）；⛔ 不可放宽为 e.qq.com，腾讯大量业务共用' },
+  // ---------- 聚合广告 ----------
+  { domain: 'sogaha.cn', matchType: MATCH_SUFFIX, enabled: true, note: '聚合广告 SDK（实测 ctrace.15 次 / adx.7 次）' },
+  // ---------- 待实测确认（默认关，避免误伤业务）----------
+  { domain: 'ssp.yg84.com', matchType: MATCH_EXACT, enabled: false, note: '疑似广告 SSP（华为云 openresty、空响应体）；仅命名与响应形态为证，多跑几次再定' },
+  { domain: 'sf3-fe-tos.pglstatp-toutiao.com', matchType: MATCH_EXACT, enabled: false, note: '穿山甲素材 CDN（Mac 代理侧抓到）；拦后可能只剩空白占位，需与 D 级对比' },
+  { domain: 'pglstatp-toutiao.com', matchType: MATCH_SUFFIX, enabled: false, note: '穿山甲 CDN 全域兜底；可能与正常素材共用，非必要不开' }
 ];
 
 /** 白名单：优先级高于黑名单（FR-3.3） */
 export const WHITELIST: Array<DomainRule> = [
+  // 支付 / 银行：永久放行（FR-3.3）
   { domain: 'alipay.com', matchType: MATCH_SUFFIX, enabled: true, note: '支付类，永久放行' },
   { domain: 'unionpay.com', matchType: MATCH_SUFFIX, enabled: true, note: '支付类，永久放行' },
   { domain: 'icbc.com.cn', matchType: MATCH_SUFFIX, enabled: true, note: '银行，永久放行' },
   { domain: 'cmbchina.com', matchType: MATCH_SUFFIX, enabled: true, note: '银行，永久放行' },
-  { domain: 'api.chelaile.net.cn', matchType: MATCH_EXACT, enabled: true, note: '车来了主 API，勿拦' }
+  // 观测到但判定不拦（诊断页 topForwarded）——留在这里防以后加宽泛后缀时误伤
+  { domain: 'api.chelaile.net.cn', matchType: MATCH_EXACT, enabled: true, note: '车来了主 API' },
+  { domain: 'atrace.chelaile.net.cn', matchType: MATCH_EXACT, enabled: true, note: '车来了埋点（拦了可能影响数据上报/功能）' },
+  { domain: 'logs.chelaile.net.cn', matchType: MATCH_EXACT, enabled: true, note: '车来了日志' },
+  { domain: 'pro.bugly.qq.com', matchType: MATCH_EXACT, enabled: true, note: '腾讯 Bugly 崩溃上报，拦了影响问题定位' },
+  { domain: 'apmplus.volces.com', matchType: MATCH_EXACT, enabled: true, note: '字节 APM 性能监控' }
 ];
 
 /**
