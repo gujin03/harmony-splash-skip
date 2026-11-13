@@ -1,0 +1,31 @@
+# ---- 构建产物 ----
+build/
+.hvigor/
+oh_modules/
+node_modules/
+cxx/.cxx/
+*.hap
+*.hsp
+*.har
+
+# ---- IDE / 系统 ----
+.idea/
+.DS_Store
+
+# ---- 签名材料（含证书路径与密码密文，禁止入库）----
+# DevEco 26 把签名配置放在 .sign/sign-config.json5，构建时优先级高于 build-profile.json5
+.sign/
+*.p12
+*.cer
+*.p7b
+*.csr
+
+# ---- 本地环境 ----
+local.properties
+
+# ---- 备份与临时文件 ----
+# ⚠️ 不要把 *.bak 放进 resources/：资源打包器会把它当资源扫描并报 module_desc conflict
+*.bak
+*.tmp
+*.orig
+*.swp

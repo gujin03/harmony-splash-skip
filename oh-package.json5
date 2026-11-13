@@ -1,0 +1,14 @@
+{
+  "modelVersion": "5.0.0",
+  "name": "harmony-splash-skip-poc",
+  "version": "0.1.0",
+  "description": "HarmonyOS 开屏广告跳过 PoC（PRD 9.1 极简验证版）",
+  "main": "",
+  "author": "",
+  "license": "",
+  "dependencies": {},
+  "devDependencies": {
+    "@ohos/hvigor": "5.0.0",
+    "@ohos/hvigor-ohos-plugin": "5.0.0"
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "app": {
+    "bundleName": "com.liuqi.splashskip",
+    "vendor": "splashskip",
+    "versionCode": 1000000,
+    "versionName": "0.1.0",
+    "icon": "$media:app_icon",
+    "label": "$string:app_name",
+    "minAPIVersion": 12,
+    "targetAPIVersion": 23
+  }
+}
