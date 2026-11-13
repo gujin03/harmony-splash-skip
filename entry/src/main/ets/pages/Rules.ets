@@ -2,6 +2,7 @@ import router from '@ohos.router';
 import common from '@ohos.app.ability.common';
 import fs from '@ohos.file.fs';
 import picker from '@ohos.file.picker';
+import util from '@ohos.util';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { Log } from '../common/Logger';
 import { RuleStore } from '../config/RuleStore';
@@ -35,8 +36,9 @@ struct Rules {
   @State testResult: string = '';
   @State ioText: string = '';
   @State ioMsg: string = '';
-  /** 系统保存窗口是异步的，期间禁用按钮防重复拉起 */
+  /** 系统保存／选择窗口是异步的，期间禁用按钮防重复拉起 */
   @State exporting: boolean = false;
+  @State importing: boolean = false;
 
   aboutToAppear(): void {
     this.load();
@@ -211,8 +213,85 @@ struct Rules {
     }
   }
 
-  private doImport(): void {
-    const err: string = this.store().importText(this.ioText.trim());
+  /** 从 URI 读文本：先 open 再按 fd 读，避免依赖 readTextSync 对 file URI 的支持 */
+  private readTextFromUri(uri: string): string {
+    const file: fs.File = fs.openSync(uri, fs.OpenMode.READ_ONLY);
+    try {
+      const st: fs.Stat = fs.statSync(file.fd);
+      // 规则文件正常只有几 KB；超过 2 MB 直接判为异常，避免误选大文件吃内存
+      if (st.size <= 0 || st.size > 2 * 1024 * 1024) {
+        return '';
+      }
+      const buf: ArrayBuffer = new ArrayBuffer(st.size);
+      const n: number = fs.readSync(file.fd, buf);
+      const decoder: util.TextDecoder = util.TextDecoder.create('utf-8');
+      return decoder.decodeToString(new Uint8Array(buf, 0, n));
+    } finally {
+      fs.closeSync(file);
+    }
+  }
+
+  /**
+   * FR-3.4：从文件导入。
+   * 系统文件选择器（DocumentViewPicker.select）→ 读取 → RuleStore.importText 的
+   * 四关校验（format／schemaVersion／字段／checksum）→ 写盘并热更新。
+   */
+  private async doImportFromFile(): Promise<void> {
+    if (this.importing) {
+      return;
+    }
+    this.importing = true;
+    this.ioMsg = '正在等待文件选择…';
+    try {
+      const ctx = getContext(this) as common.UIAbilityContext;
+      const docPicker = new picker.DocumentViewPicker(ctx);
+      const opt = new picker.DocumentSelectOptions();
+      opt.maxSelectNumber = 1;
+      opt.fileSuffixFilters = ['.json'];
+      const uris: Array<string> = await docPicker.select(opt);
+      if (uris === undefined || uris.length === 0) {
+        this.ioMsg = '已取消导入（未读取文件）';
+        return;
+      }
+      const uri: string = uris[0];
+      const text: string = this.readTextFromUri(uri);
+      if (text.length === 0) {
+        this.ioMsg = '导入失败：文件为空、超过 2MB 或无法读取';
+        return;
+      }
+      this.ioText = text;
+      const err: string = this.store().importText(text.trim());
+      if (err.length === 0) {
+        const data: RulesFile | null = this.store().getSnapshot();
+        const b: number = data === null ? 0 : data.blacklist.length;
+        const w: number = data === null ? 0 : data.whitelist.length;
+        this.ioMsg = `导入成功：黑名单 ${b} 条 / 白名单 ${w} 条，下一次查询生效`;
+        Log.info(`import from file ok: ${uri}`);
+      } else {
+        this.ioMsg = `导入失败：${err}`;
+      }
+      this.load();
+    } catch (e) {
+      const err = e as BusinessError;
+      if (err.code === 13900042) {
+        this.ioMsg = '已取消导入（未读取文件）';
+      } else {
+        this.ioMsg = `导入失败：${err.code} ${err.message}`;
+      }
+      Log.error(`import failed: code=${err.code} msg=${err.message}`);
+    } finally {
+      this.importing = false;
+    }
+  }
+
+  /** 次要入口：把文本框里的 JSON 导入（便于从聊天记录等处粘贴） */
+  private doImportText(): void {
+    const text: string = this.ioText.trim();
+    if (text.length === 0) {
+      this.ioMsg = '文本框为空，请粘贴规则 JSON 或改用「从文件导入」';
+      return;
+    }
+    const err: string = this.store().importText(text);
     this.ioMsg = err.length === 0 ? '导入成功，下一次查询生效' : `导入失败：${err}`;
     this.load();
   }
@@ -397,7 +476,7 @@ struct Rules {
             .width('100%')
             .margin({ top: 16, bottom: 6 })
 
-          TextArea({ placeholder: '导出会调起系统保存窗口，可自选目录并生成 .json 文件；导入请粘贴规则 JSON 后点「导入」', text: this.ioText })
+          TextArea({ placeholder: '导出会调起系统保存窗口；导入用「从文件导入」选择 .json，也可把 JSON 粘贴到这里后点下方「导入上方文本」', text: this.ioText })
             .height(110)
             .fontSize(10)
             .width('100%')
@@ -414,13 +493,30 @@ struct Rules {
               .onClick(() => {
                 this.doExport();
               })
-            Button('导入')
+            Button(this.importing ? '等待选择…' : '从文件导入')
               .fontSize(12)
               .height(36)
               .layoutWeight(1)
               .margin({ left: 8 })
               .backgroundColor('#4A6FA5')
-              .onClick(() => this.doImport())
+              .enabled(!this.importing)
+              .onClick(() => {
+                this.doImportFromFile();
+              })
+          }
+          .width('100%')
+          .margin({ top: 6 })
+
+          Row() {
+            Text('也可从剪贴板导入：把 JSON 粘贴到上方文本框')
+              .fontSize(10)
+              .fontColor('#888888')
+              .layoutWeight(1)
+            Button('导入上方文本')
+              .fontSize(10)
+              .height(26)
+              .backgroundColor('#8A94A6')
+              .onClick(() => this.doImportText())
           }
           .width('100%')
           .margin({ top: 6 })
